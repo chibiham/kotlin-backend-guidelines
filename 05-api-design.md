@@ -125,11 +125,16 @@ class OrderController(
 
 URLパスにバージョンを含める方式を採用する。
 
+**重要な方針:**
+- **v1 はパスを変更しない**（`/api/users` のまま維持）
+- **v2 以降は明示的にパスに含める**（`/api/v2/users`）
+- **リダイレクトは行わない**
+
 ```kotlin
-// v1: 既存のAPIをそのまま維持
+// v1: 既存のAPIはパスを変更せずそのまま維持
 @RestController
-@RequestMapping("/api/v1/users")
-class UserControllerV1(private val userService: UserService) {
+@RequestMapping("/api/users")  // バージョン番号を含めない
+class UserController(private val userService: UserService) {
     @GetMapping
     suspend fun findAll(): List<UserResponse> {
         return userService.findAll().map { it.toResponse() }
@@ -137,9 +142,9 @@ class UserControllerV1(private val userService: UserService) {
     // ... 既存の実装
 }
 
-// v2: 新しいAPI
+// v2: 新しいAPIは明示的にv2を含める
 @RestController
-@RequestMapping("/api/v2/users")
+@RequestMapping("/api/v2/users")  // v2を明示
 class UserControllerV2(private val userServiceV2: UserServiceV2) {
     @GetMapping
     suspend fun findAll(): List<UserResponseV2> {
@@ -151,37 +156,37 @@ class UserControllerV2(private val userServiceV2: UserServiceV2) {
 
 #### バージョニング導入時の移行戦略
 
-1. **既存エンドポイントの維持**
-   - `/api/users` は `/api/v1/users` にリダイレクト
-   - 一定期間（例: 6ヶ月）は両方のパスをサポート
+1. **v1 の扱い**
+   - 既存のエンドポイント（`/api/users`）はそのまま v1 として維持
+   - パスの変更やリダイレクトは行わない
+   - クライアントは既存のパスを引き続き使用可能
 
-2. **段階的な移行**
+2. **v2 の導入**
+   - 新しいバージョンは `/api/v2/users` として追加
+   - v1（`/api/users`）と v2（`/api/v2/users`）が並行稼働
+   - クライアントは必要に応じて v2 に移行
+
+3. **クライアントへの通知**
+   - v1 のレスポンスヘッダーで非推奨を通知し、v2 への移行を促す
    ```kotlin
-   // 既存パスからv1へのリダイレクト
    @RestController
    @RequestMapping("/api/users")
-   class UserRedirectController {
+   class UserController(private val userService: UserService) {
        @GetMapping
-       suspend fun redirectToV1(): ResponseEntity<Void> {
-           return ResponseEntity
-               .status(HttpStatus.MOVED_PERMANENTLY)
-               .location(URI("/api/v1/users"))
-               .build()
+       suspend fun findAll(response: ServerHttpResponse): List<UserResponse> {
+           // v2への移行を促すヘッダー
+           response.headers.add("Deprecation", "true")
+           response.headers.add("Sunset", "2024-12-31")
+           response.headers.add("Link", "</api/v2/users>; rel=\"successor-version\"")
+           return userService.findAll().map { it.toResponse() }
        }
    }
    ```
 
-3. **クライアントへの通知**
-   - レスポンスヘッダーで非推奨を通知
-   ```kotlin
-   @GetMapping
-   suspend fun findAll(response: ServerHttpResponse): List<UserResponse> {
-       response.headers.add("Deprecation", "true")
-       response.headers.add("Sunset", "2024-12-31")
-       response.headers.add("Link", "</api/v1/users>; rel=\"alternate\"")
-       return userService.findAll().map { it.toResponse() }
-   }
-   ```
+4. **廃止スケジュール**
+   - v2 リリース後、一定期間（例: 6ヶ月〜1年）は v1 をサポート
+   - `Sunset` ヘッダーで廃止予定日を通知
+   - 期間経過後に v1（`/api/users`）を廃止
 
 #### バージョンを上げない変更
 
