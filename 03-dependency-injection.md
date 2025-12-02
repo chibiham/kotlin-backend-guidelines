@@ -16,15 +16,16 @@ class UserService(
     private val clock: Clock,
 ) {
     suspend fun createUser(request: CreateUserRequest): User {
+        // IDはAuto Incrementでnull（DB採番前）
         val user = User(
-            id = UserId.generate(),
+            id = null,
             name = request.name,
             email = request.email,
             createdAt = clock.instant(),
         )
-        userRepository.save(user)
-        emailService.sendWelcomeEmail(user)
-        return user
+        val savedUser = userRepository.save(user)
+        emailService.sendWelcomeEmail(savedUser)
+        return savedUser
     }
 }
 ```
@@ -70,13 +71,18 @@ class UserService {
 class OrderService(
     private val orderRepository: OrderRepository,
     private val paymentGateway: PaymentGateway,
-    private val clock: Clock,                        // 時刻のテスト容易性
-    private val idGenerator: IdGenerator,            // ID生成のテスト容易性
+    private val tokenGenerator: TokenGenerator,  // ランダムトークン生成（副作用）
+    private val clock: Clock,                    // 時刻のテスト容易性
 ) {
     suspend fun createOrder(request: CreateOrderRequest): Order {
+        // ランダムトークンを生成（通知用など）
+        val notificationToken = tokenGenerator.generateToken()
+
+        // IDはAuto Incrementでnull（DB採番前）
         val order = Order(
-            id = idGenerator.generate(),
+            id = null,
             items = request.items,
+            notificationToken = notificationToken,
             createdAt = clock.instant(),
         )
         return orderRepository.save(order)
@@ -90,31 +96,31 @@ class OrderService(
 class OrderServiceTest {
     private val orderRepository = mockk<OrderRepository>()
     private val paymentGateway = mockk<PaymentGateway>()
+    private val tokenGenerator = mockk<TokenGenerator>()
     private val fixedClock = Clock.fixed(
         Instant.parse("2024-01-15T10:00:00Z"),
         ZoneOffset.UTC
     )
-    private val idGenerator = mockk<IdGenerator>()
 
     private val orderService = OrderService(
         orderRepository = orderRepository,
         paymentGateway = paymentGateway,
+        tokenGenerator = tokenGenerator,
         clock = fixedClock,
-        idGenerator = idGenerator,
     )
 
     @Test
-    fun `createOrder should create order with generated id and current time`() = runTest {
+    fun `createOrder should create order with generated token and current time`() = runTest {
         // Given
-        val expectedId = OrderId("order-123")
-        every { idGenerator.generate() } returns expectedId
+        val expectedToken = "test-token-123"
+        every { tokenGenerator.generateToken() } returns expectedToken
         coEvery { orderRepository.save(any()) } returnsArgument 0
 
         // When
         val order = orderService.createOrder(CreateOrderRequest(...))
 
         // Then
-        assertThat(order.id).isEqualTo(expectedId)
+        assertThat(order.notificationToken).isEqualTo(expectedToken)
         assertThat(order.createdAt).isEqualTo(fixedClock.instant())
     }
 }
@@ -130,8 +136,9 @@ class OrderService(
 ) {
     suspend fun createOrder(request: CreateOrderRequest): Order {
         val order = Order(
-            id = OrderId(UUID.randomUUID().toString()),  // テストで制御不可
-            createdAt = Instant.now(),                    // テストで制御不可
+            id = null,
+            createdAt = Instant.now(),                   // テストで制御不可
+            notificationToken = UUID.randomUUID().toString(),  // テストで制御不可
             ...
         )
         return orderRepository.save(order)

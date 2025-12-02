@@ -21,63 +21,176 @@
 ### URL 構造
 
 ```
-/api/{version}/{resource}/{id}/{sub-resource}
+/api/{resource}/{id}/{sub-resource}
 ```
 
 ```kotlin
-@Configuration
-class ApiRouter(
-    private val userHandler: UserHandler,
-    private val orderHandler: OrderHandler,
+// ユーザーリソース
+@RestController
+@RequestMapping("/api/users")
+class UserController(
+    private val userService: UserService,
 ) {
-    @Bean
-    fun apiRoutes(): RouterFunction<ServerResponse> = coRouter {
-        "/api/v1".nest {
-            // ユーザーリソース
-            "/users".nest {
-                GET("", userHandler::findAll)
-                POST("", userHandler::create)
-                GET("/{id}", userHandler::findById)
-                PUT("/{id}", userHandler::update)
-                DELETE("/{id}", userHandler::delete)
+    @GetMapping
+    suspend fun findAll(): List<UserResponse> = userService.findAll().map { it.toResponse() }
 
-                // サブリソース: ユーザーの注文
-                GET("/{id}/orders", orderHandler::findByUserId)
-            }
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    suspend fun create(@Valid @RequestBody request: CreateUserRequest): UserResponse {
+        val user = userService.create(request)
+        return user.toResponse()
+    }
 
-            // 注文リソース
-            "/orders".nest {
-                GET("", orderHandler::findAll)
-                POST("", orderHandler::create)
-                GET("/{id}", orderHandler::findById)
-                PATCH("/{id}/status", orderHandler::updateStatus)
-                POST("/{id}/cancel", orderHandler::cancel)
-            }
-        }
+    @GetMapping("/{id}")
+    suspend fun findById(@PathVariable id: Long): UserResponse {
+        val user = userService.findById(id) ?: throw UserNotFoundException(id)
+        return user.toResponse()
+    }
+
+    @PutMapping("/{id}")
+    suspend fun update(
+        @PathVariable id: Long,
+        @Valid @RequestBody request: UpdateUserRequest
+    ): UserResponse {
+        val user = userService.update(id, request)
+        return user.toResponse()
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    suspend fun delete(@PathVariable id: Long) {
+        userService.delete(id)
+    }
+
+    // サブリソース: ユーザーの注文
+    @GetMapping("/{id}/orders")
+    suspend fun findOrders(@PathVariable id: Long): List<OrderResponse> {
+        return orderService.findByUserId(id).map { it.toResponse() }
+    }
+}
+
+// 注文リソース
+@RestController
+@RequestMapping("/api/orders")
+class OrderController(
+    private val orderService: OrderService,
+) {
+    @GetMapping
+    suspend fun findAll(): List<OrderResponse> = orderService.findAll().map { it.toResponse() }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    suspend fun create(@Valid @RequestBody request: CreateOrderRequest): OrderResponse {
+        val order = orderService.create(request)
+        return order.toResponse()
+    }
+
+    @GetMapping("/{id}")
+    suspend fun findById(@PathVariable id: Long): OrderResponse {
+        val order = orderService.findById(id) ?: throw OrderNotFoundException(id)
+        return order.toResponse()
+    }
+
+    @PatchMapping("/{id}/status")
+    suspend fun updateStatus(
+        @PathVariable id: Long,
+        @Valid @RequestBody request: UpdateOrderStatusRequest
+    ): OrderResponse {
+        val order = orderService.updateStatus(id, request.status)
+        return order.toResponse()
+    }
+
+    @PostMapping("/{id}/cancel")
+    suspend fun cancel(@PathVariable id: Long): OrderResponse {
+        val order = orderService.cancel(id)
+        return order.toResponse()
     }
 }
 ```
 
 ### バージョニング
 
-URL パスにバージョンを含める。
+**現在はバージョニングを行わない方針**とする。将来的に破壊的変更が必要になった場合に導入を検討する。
 
-```
-/api/v1/users
-/api/v2/users
-```
+#### バージョニングが必要になるケース
 
-**バージョンを上げる基準:**
+以下のような破壊的変更が必要になった場合、バージョニングの導入を検討する：
 
 - 既存フィールドの削除や型変更
 - 必須フィールドの追加
 - レスポンス構造の大幅な変更
+- エンドポイントのパス変更
 
-**バージョンを上げない変更:**
+#### バージョニング導入時の実装例
+
+URLパスにバージョンを含める方式を採用する。
+
+```kotlin
+// v1: 既存のAPIをそのまま維持
+@RestController
+@RequestMapping("/api/v1/users")
+class UserControllerV1(private val userService: UserService) {
+    @GetMapping
+    suspend fun findAll(): List<UserResponse> {
+        return userService.findAll().map { it.toResponse() }
+    }
+    // ... 既存の実装
+}
+
+// v2: 新しいAPI
+@RestController
+@RequestMapping("/api/v2/users")
+class UserControllerV2(private val userServiceV2: UserServiceV2) {
+    @GetMapping
+    suspend fun findAll(): List<UserResponseV2> {
+        return userServiceV2.findAll().map { it.toResponseV2() }
+    }
+    // ... 新しい実装
+}
+```
+
+#### バージョニング導入時の移行戦略
+
+1. **既存エンドポイントの維持**
+   - `/api/users` は `/api/v1/users` にリダイレクト
+   - 一定期間（例: 6ヶ月）は両方のパスをサポート
+
+2. **段階的な移行**
+   ```kotlin
+   // 既存パスからv1へのリダイレクト
+   @RestController
+   @RequestMapping("/api/users")
+   class UserRedirectController {
+       @GetMapping
+       suspend fun redirectToV1(): ResponseEntity<Void> {
+           return ResponseEntity
+               .status(HttpStatus.MOVED_PERMANENTLY)
+               .location(URI("/api/v1/users"))
+               .build()
+       }
+   }
+   ```
+
+3. **クライアントへの通知**
+   - レスポンスヘッダーで非推奨を通知
+   ```kotlin
+   @GetMapping
+   suspend fun findAll(response: ServerHttpResponse): List<UserResponse> {
+       response.headers.add("Deprecation", "true")
+       response.headers.add("Sunset", "2024-12-31")
+       response.headers.add("Link", "</api/v1/users>; rel=\"alternate\"")
+       return userService.findAll().map { it.toResponse() }
+   }
+   ```
+
+#### バージョンを上げない変更
+
+以下の変更は既存のエンドポイントに対して行える（破壊的変更ではない）：
 
 - オプショナルフィールドの追加
 - 新しいエンドポイントの追加
 - バグ修正
+- パフォーマンス改善
 
 ## HTTP メソッド
 
@@ -91,28 +204,44 @@ URL パスにバージョンを含める。
 | PATCH    | リソースの部分更新           | ○      | ×      |
 | DELETE   | リソースの削除               | ○      | ×      |
 
+**冪等性（Idempotent）**: 同じリクエストを複数回実行しても、結果が同じになる性質。ネットワークエラー時のリトライが安全に行える。
+
+**安全性（Safe）**: リソースの状態を変更しない性質。キャッシュやプリフェッチが可能。
+
+```kotlin
+// 安全（Safe）: 何度実行してもリソースは変わらない
+GET /api/users/123  // データベースは変更されない
+
+// 冪等（Idempotent）: 複数回実行しても結果は同じ
+PUT /api/users/123   // 1回でも10回でも最終的な状態は同じ
+DELETE /api/users/123  // 1回目は削除、2回目以降は404だが副作用なし
+
+// 非冪等（Non-Idempotent）: 実行するたびに結果が変わる
+POST /api/users  // 実行するたびに新しいユーザーが作成される
+```
+
 ### 具体例
 
 ```kotlin
 // GET: リソースの取得
-GET /api/v1/users          // ユーザー一覧
-GET /api/v1/users/123      // 特定ユーザー
+GET /api/users          // ユーザー一覧
+GET /api/users/123      // 特定ユーザー
 
 // POST: リソースの作成
-POST /api/v1/users         // ユーザー作成
+POST /api/users         // ユーザー作成
 
 // PUT: リソースの完全な置換（全フィールドを送信）
-PUT /api/v1/users/123      // ユーザー情報の置換
+PUT /api/users/123      // ユーザー情報の置換
 
 // PATCH: リソースの部分更新（変更フィールドのみ送信）
-PATCH /api/v1/users/123    // ユーザー情報の部分更新
+PATCH /api/users/123    // ユーザー情報の部分更新
 
 // DELETE: リソースの削除
-DELETE /api/v1/users/123   // ユーザー削除
+DELETE /api/users/123   // ユーザー削除
 
 // POST: リソース作成以外の操作（状態変更など）
-POST /api/v1/orders/123/cancel    // 注文キャンセル
-POST /api/v1/users/123/activate   // ユーザー有効化
+POST /api/orders/123/cancel    // 注文キャンセル
+POST /api/users/123/activate   // ユーザー有効化
 ```
 
 ## HTTP ステータスコード
@@ -127,14 +256,14 @@ POST /api/v1/users/123/activate   // ユーザー有効化
 
 ### クライアントエラー
 
-| コード                   | 用途                 | 使用例                     |
-| ------------------------ | -------------------- | -------------------------- |
-| 400 Bad Request          | リクエスト不正       | バリデーションエラー       |
-| 401 Unauthorized         | 認証が必要           | 未認証アクセス             |
-| 403 Forbidden            | 権限なし             | 認証済みだが権限不足       |
-| 404 Not Found            | リソースが存在しない | 存在しない ID へのアクセス |
-| 409 Conflict             | 競合                 | 重複登録、楽観ロック失敗   |
-| 422 Unprocessable Entity | 処理不可             | ビジネスルール違反         |
+| コード           | 用途                 | 使用例                                                           |
+| ---------------- | -------------------- | ---------------------------------------------------------------- |
+| 400 Bad Request  | リクエスト不正       | バリデーションエラー、ビジネスルール違反（重複登録、在庫不足等） |
+| 401 Unauthorized | 認証が必要           | 未認証アクセス                                                   |
+| 403 Forbidden    | 権限なし             | 認証済みだが権限不足                                             |
+| 404 Not Found    | リソースが存在しない | 存在しない ID へのアクセス                                       |
+
+**注意:** 409 Conflictと422 Unprocessable Entityは使用せず、ビジネスルール違反は400 Bad Requestで統一する。個別の`type`フィールドでエラーを区別する。
 
 ### サーバーエラー
 
@@ -147,31 +276,30 @@ POST /api/v1/users/123/activate   // ユーザー有効化
 ### 実装例
 
 ```kotlin
-@Component
-class UserHandler(private val userService: UserService) {
+@RestController
+@RequestMapping("/api/users")
+class UserController(private val userService: UserService) {
 
-    suspend fun create(request: ServerRequest): ServerResponse {
-        val req = request.awaitBody<CreateUserRequest>()
-        val user = userService.create(req)
-
-        return ServerResponse
-            .created(URI("/api/v1/users/${user.id.value}"))
-            .bodyValueAndAwait(user.toResponse())
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    suspend fun create(@Valid @RequestBody request: CreateUserRequest): UserResponse {
+        val user = userService.create(request)
+        return user.toResponse()
     }
 
-    suspend fun update(request: ServerRequest): ServerResponse {
-        val id = UserId(request.pathVariable("id").toLong())
-        val req = request.awaitBody<UpdateUserRequest>()
-        val user = userService.update(id, req)
-
-        return ServerResponse.ok().bodyValueAndAwait(user.toResponse())
+    @PutMapping("/{id}")
+    suspend fun update(
+        @PathVariable id: Long,
+        @Valid @RequestBody request: UpdateUserRequest
+    ): UserResponse {
+        val user = userService.update(id, request)
+        return user.toResponse()
     }
 
-    suspend fun delete(request: ServerRequest): ServerResponse {
-        val id = UserId(request.pathVariable("id").toLong())
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    suspend fun delete(@PathVariable id: Long) {
         userService.delete(id)
-
-        return ServerResponse.noContent().buildAndAwait()
     }
 }
 ```
@@ -253,26 +381,30 @@ data class PageRequest(
     val sort: String? = null,
 )
 
-// Handler での使用
-suspend fun findAll(request: ServerRequest): ServerResponse {
+// Controller での使用
+@GetMapping
+suspend fun findAll(
+    @RequestParam(required = false) name: String?,
+    @RequestParam(required = false) email: String?,
+    @RequestParam(required = false) status: UserStatus?,
+    @RequestParam(required = false, defaultValue = "0") page: Int,
+    @RequestParam(required = false, defaultValue = "20") size: Int,
+    @RequestParam(required = false) sort: String?,
+): PageResponse<UserResponse> {
     val criteria = UserSearchCriteria(
-        name = request.queryParamOrNull("name"),
-        email = request.queryParamOrNull("email"),
-        status = request.queryParamOrNull("status")?.let { UserStatus.valueOf(it) },
+        name = name,
+        email = email,
+        status = status,
     )
     val pageRequest = PageRequest(
-        page = request.queryParamOrNull("page")?.toIntOrNull() ?: 0,
-        size = request.queryParamOrNull("size")?.toIntOrNull() ?: 20,
-        sort = request.queryParamOrNull("sort"),
+        page = page,
+        size = size,
+        sort = sort,
     )
 
     val result = userService.findAll(criteria, pageRequest)
-    return ServerResponse.ok().bodyValueAndAwait(result)
+    return result.map { it.toResponse() }
 }
-
-// 拡張関数
-fun ServerRequest.queryParamOrNull(name: String): String? =
-    queryParam(name).orElse(null)
 ```
 
 ## レスポンス設計
@@ -327,20 +459,22 @@ data class PageResponse<T>(
 )
 
 // 使用例
-suspend fun findAll(request: ServerRequest): ServerResponse {
-    val page = userService.findAll(criteria, pageRequest)
+@GetMapping
+suspend fun findAll(
+    @RequestParam(required = false, defaultValue = "0") page: Int,
+    @RequestParam(required = false, defaultValue = "20") size: Int,
+): PageResponse<UserResponse> {
+    val pageResult = userService.findAll(page, size)
 
-    val response = PageResponse(
-        content = page.content.map { it.toResponse() },
-        page = page.number,
-        size = page.size,
-        totalElements = page.totalElements,
-        totalPages = page.totalPages,
-        hasNext = page.hasNext(),
-        hasPrevious = page.hasPrevious(),
+    return PageResponse(
+        content = pageResult.content.map { it.toResponse() },
+        page = pageResult.number,
+        size = pageResult.size,
+        totalElements = pageResult.totalElements,
+        totalPages = pageResult.totalPages,
+        hasNext = pageResult.hasNext(),
+        hasPrevious = pageResult.hasPrevious(),
     )
-
-    return ServerResponse.ok().bodyValueAndAwait(response)
 }
 ```
 
@@ -412,8 +546,8 @@ data class UserDetailResponse(
     val lastLoginAt: Instant?,
 )
 
-// 一覧: GET /api/v1/users -> List<UserSummaryResponse>
-// 詳細: GET /api/v1/users/{id} -> UserDetailResponse
+// 一覧: GET /api/users -> List<UserSummaryResponse>
+// 詳細: GET /api/users/{id} -> UserDetailResponse
 ```
 
 ## 日時のフォーマット
@@ -488,7 +622,7 @@ class JacksonConfig {
   "title": "Validation Error",
   "status": 400,
   "detail": "Request validation failed",
-  "instance": "/api/v1/users",
+  "instance": "/api/users",
   "errors": [{ "field": "email", "message": "must be a valid email address" }]
 }
 ```
@@ -536,50 +670,3 @@ data class UserResponse(
     @field:Schema(description = "ステータス", example = "ACTIVE", allowableValues = ["ACTIVE", "INACTIVE", "SUSPENDED"])
     val status: String,
 )
-```
-
-## HATEOAS（任意）
-
-必要に応じて HATEOAS リンクを含める。
-
-```kotlin
-data class UserResponse(
-    val id: Long,
-    val name: String,
-    val email: String,
-    val links: Links,
-) {
-    data class Links(
-        val self: String,
-        val orders: String,
-        val update: String,
-        val delete: String,
-    )
-}
-
-fun User.toResponse(): UserResponse = UserResponse(
-    id = this.id.value,
-    name = this.name.value,
-    email = this.email.value,
-    links = UserResponse.Links(
-        self = "/api/v1/users/${this.id.value}",
-        orders = "/api/v1/users/${this.id.value}/orders",
-        update = "/api/v1/users/${this.id.value}",
-        delete = "/api/v1/users/${this.id.value}",
-    ),
-)
-```
-
-```json
-{
-  "id": 123,
-  "name": "John Doe",
-  "email": "john@example.com",
-  "links": {
-    "self": "/api/v1/users/123",
-    "orders": "/api/v1/users/123/orders",
-    "update": "/api/v1/users/123",
-    "delete": "/api/v1/users/123"
-  }
-}
-```

@@ -92,12 +92,20 @@ data class ValidationProblemDetail(
 object ProblemTypes {
     private const val BASE_URI = "https://api.example.com/problems"
 
+    // Not Found (404)
     val USER_NOT_FOUND = URI("$BASE_URI/user-not-found")
     val ORDER_NOT_FOUND = URI("$BASE_URI/order-not-found")
-    val VALIDATION_ERROR = URI("$BASE_URI/validation-error")
-    val DUPLICATE_EMAIL = URI("$BASE_URI/duplicate-email")
-    val INSUFFICIENT_BALANCE = URI("$BASE_URI/insufficient-balance")
+
+    // Bad Request (400)
+    val VALIDATION_ERROR = URI("$BASE_URI/validation-error")          // 入力値の形式エラー専用
+    val DUPLICATE_EMAIL = URI("$BASE_URI/duplicate-email")            // ビジネスロジックエラー
+    val INSUFFICIENT_BALANCE = URI("$BASE_URI/insufficient-balance")  // ビジネスロジックエラー
+    val INSUFFICIENT_STOCK = URI("$BASE_URI/insufficient-stock")      // ビジネスロジックエラー
+
+    // Bad Gateway (502)
     val EXTERNAL_SERVICE_ERROR = URI("$BASE_URI/external-service-error")
+
+    // Internal Server Error (500)
     val INTERNAL_ERROR = URI("$BASE_URI/internal-error")
 }
 ```
@@ -136,6 +144,7 @@ sealed class ApplicationException(
     sealed class BadRequest(message: String) : ApplicationException(message) {
         override val status: HttpStatus = HttpStatus.BAD_REQUEST
 
+        // 入力値の形式エラー専用
         data class Validation(
             val errors: List<FieldError>,
         ) : BadRequest("Validation failed") {
@@ -145,22 +154,27 @@ sealed class ApplicationException(
             data class FieldError(val field: String, val message: String)
         }
 
-        data class DuplicateEmail(val email: Email) : BadRequest("Email already exists: ${email.value}") {
+        // ビジネスロジックエラー
+        data class DuplicateEmail(val email: String) : BadRequest("Email already exists: $email") {
             override val type: URI = ProblemTypes.DUPLICATE_EMAIL
             override val title: String = "Duplicate Email"
         }
-    }
-
-    // 409 Conflict
-    sealed class Conflict(message: String) : ApplicationException(message) {
-        override val status: HttpStatus = HttpStatus.CONFLICT
 
         data class InsufficientBalance(
-            val required: Money,
-            val available: Money,
-        ) : Conflict("Insufficient balance: required ${required.amount}, available ${available.amount}") {
+            val required: Long,
+            val available: Long,
+        ) : BadRequest("Insufficient balance: required $required, available $available") {
             override val type: URI = ProblemTypes.INSUFFICIENT_BALANCE
             override val title: String = "Insufficient Balance"
+        }
+
+        data class InsufficientStock(
+            val productId: Long,
+            val requested: Int,
+            val available: Int,
+        ) : BadRequest("Insufficient stock for product $productId: requested $requested, available $available") {
+            override val type: URI = ProblemTypes.INSUFFICIENT_STOCK
+            override val title: String = "Insufficient Stock"
         }
     }
 
@@ -267,6 +281,54 @@ class GlobalExceptionHandler {
             .bodyValue(problemDetail)
     }
 
+    @ExceptionHandler(ServerWebInputException::class)
+    fun handleServerWebInputException(
+        ex: ServerWebInputException,
+        exchange: ServerWebExchange,
+    ): Mono<ServerResponse> {
+        // Nullableでない値がnullだった場合など、デシリアライゼーションエラー
+        val problemDetail = ValidationProblemDetail(
+            type = ProblemTypes.VALIDATION_ERROR,
+            title = "Validation Error",
+            status = HttpStatus.BAD_REQUEST.value(),
+            detail = ex.reason ?: "Invalid request body",
+            instance = URI(exchange.request.path.value()),
+            errors = listOf(
+                ValidationProblemDetail.FieldError(
+                    field = ex.methodParameter?.parameterName ?: "body",
+                    message = ex.reason ?: "Invalid value"
+                )
+            ),
+        )
+
+        return ServerResponse
+            .status(HttpStatus.BAD_REQUEST)
+            .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+            .bodyValue(problemDetail)
+    }
+
+    @ExceptionHandler(DecodingException::class)
+    fun handleDecodingException(
+        ex: DecodingException,
+        exchange: ServerWebExchange,
+    ): Mono<ServerResponse> {
+        // JSONパースエラー（Nullableでない値がnullなど）
+        logger.warn(ex) { "Request body decoding error: ${exchange.request.path}" }
+
+        val problemDetail = ProblemDetail(
+            type = ProblemTypes.VALIDATION_ERROR,
+            title = "Validation Error",
+            status = HttpStatus.BAD_REQUEST.value(),
+            detail = "Invalid request body format",
+            instance = URI(exchange.request.path.value()),
+        )
+
+        return ServerResponse
+            .status(HttpStatus.BAD_REQUEST)
+            .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+            .bodyValue(problemDetail)
+    }
+
     @ExceptionHandler(Exception::class)
     fun handleUnexpectedException(
         ex: Exception,
@@ -328,8 +390,9 @@ class UserService(
             throw ApplicationException.BadRequest.DuplicateEmail(request.email)
         }
 
+        // IDはAuto Incrementでnull（DB採番前）
         val user = User(
-            id = UserId.generate(),
+            id = null,
             name = request.name,
             email = request.email,
         )
@@ -338,30 +401,31 @@ class UserService(
 }
 ```
 
-### Handler での例外処理
+### Controller での例外処理
 
-Handler では例外をキャッチせず、GlobalExceptionHandler に委ねる。
+Controller では例外をキャッチせず、GlobalExceptionHandler に委ねる。
 
 ```kotlin
-@Component
-class UserHandler(private val userService: UserService) {
+@RestController
+@RequestMapping("/api/users")
+class UserController(private val userService: UserService) {
 
     // 良い例: 例外をそのまま伝播
-    suspend fun findById(request: ServerRequest): ServerResponse {
-        val id = UserId(request.pathVariable("id").toLong())
+    @GetMapping("/{id}")
+    suspend fun findById(@PathVariable id: Long): UserResponse {
         val user = userService.findById(id)  // 例外はGlobalExceptionHandlerで処理
-        return ServerResponse.ok().bodyValueAndAwait(user.toResponse())
+        return user.toResponse()
     }
 
-    // 悪い例: Handlerで例外をキャッチ
-    suspend fun findByIdBad(request: ServerRequest): ServerResponse {
+    // 悪い例: Controllerで例外をキャッチ
+    @GetMapping("/{id}/bad")
+    suspend fun findByIdBad(@PathVariable id: Long): ResponseEntity<UserResponse> {
         return try {
-            val id = UserId(request.pathVariable("id").toLong())
             val user = userService.findById(id)
-            ServerResponse.ok().bodyValueAndAwait(user.toResponse())
+            ResponseEntity.ok(user.toResponse())
         } catch (e: ApplicationException.NotFound.User) {
             // NG: ここでキャッチすべきではない
-            ServerResponse.notFound().buildAndAwait()
+            ResponseEntity.notFound().build()
         }
     }
 }
@@ -369,9 +433,114 @@ class UserHandler(private val userService: UserService) {
 
 ## バリデーション
 
-### Bean Validation の使用
+### バリデーションとビジネスロジックエラーの区別
+
+入力値のバリデーションとビジネスロジックエラーを明確に区別する。
+
+| 分類 | 実施場所 | エラータイプ | 例 |
+|------|---------|-------------|-----|
+| **バリデーション**<br>（入力値の形式チェック） | Request DTO（Bean Validation） | `validation-error`（共通） | フォーマット、必須チェック、文字数制限、日付範囲、パスワード一致 |
+| **ビジネスロジックエラー**<br>（業務ルール違反） | Application/Domain層 | 個別の`type`を割り当て | メール重複チェック、在庫不足、残高不足、状態遷移不可 |
+
+#### バリデーション（入力値の形式チェック）
+
+入力値のみから判定可能なチェック。Request DTOで実施し、`validation-error`タイプを使用する。
+
+```json
+{
+  "type": "https://api.example.com/problems/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "detail": "Validation failed",
+  "errors": [...]
+}
+```
+
+#### ビジネスロジックエラー（業務ルール違反）
+
+データベースや外部サービスの状態、またはビジネスルールに依存するエラー。Application/Domain層で実施し、個別の`type`を割り当てる。
+
+```json
+{
+  "type": "https://api.example.com/problems/duplicate-email",
+  "title": "Duplicate Email",
+  "status": 400,
+  "detail": "Email already exists: user@example.com"
+}
+```
+
+```json
+{
+  "type": "https://api.example.com/problems/insufficient-stock",
+  "title": "Insufficient Stock",
+  "status": 400,
+  "detail": "Requested quantity exceeds available stock"
+}
+```
+
+### Nullableでない値がnullだった場合
+
+Kotlinの`@RequestBody`で非Nullable型を定義した場合、nullが送られると以下の例外が発生する：
+
+| 例外 | 発生タイミング | 処理 |
+|------|-------------|------|
+| `ServerWebInputException` | 非Nullable型の引数にnullが渡された場合 | `handleServerWebInputException`で処理 |
+| `DecodingException` | JSONデシリアライズ時にnullが含まれていた場合 | `handleDecodingException`で処理 |
+
+#### リクエスト例
 
 ```kotlin
+data class CreateUserRequest(
+    val name: String,  // 非Nullable
+    val email: String, // 非Nullable
+)
+```
+
+```json
+// NG: nameがnull
+{
+  "name": null,
+  "email": "user@example.com"
+}
+```
+
+#### レスポンス例
+
+```json
+{
+  "type": "https://api.example.com/problems/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "detail": "Invalid request body",
+  "instance": "/api/users",
+  "errors": [
+    {
+      "field": "body",
+      "message": "Invalid value"
+    }
+  ]
+}
+```
+
+**推奨**: 非Nullable型の場合、nullを許容しないため、クライアント側で適切なエラーメッセージを表示する。より詳細なエラー情報が必要な場合は、Bean Validationの`@NotNull`アノテーションを併用する。
+
+```kotlin
+data class CreateUserRequest(
+    @field:NotNull(message = "Name is required")
+    val name: String?,  // Nullableにして@NotNullで検証
+
+    @field:NotNull(message = "Email is required")
+    @field:Email(message = "Invalid email format")
+    val email: String?,
+)
+```
+
+### Bean Validation の使用
+
+Request DTOに`@field:`アノテーションでバリデーションルールを定義する。
+
+```kotlin
+// presentation/dto/UserRequest.kt
 data class CreateUserRequest(
     @field:NotBlank(message = "Name is required")
     @field:Size(max = 100, message = "Name must be at most 100 characters")
@@ -387,34 +556,187 @@ data class CreateUserRequest(
 )
 ```
 
-### カスタムバリデーション
-
-複数フィールドにまたがるバリデーションは Service で行う。
+Controllerで`@Valid`アノテーションを使用してバリデーションを実行する。
 
 ```kotlin
+// presentation/UserController.kt
+@RestController
+@RequestMapping("/api/users")
+class UserController(private val userService: UserService) {
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    suspend fun create(@Valid @RequestBody request: CreateUserRequest): UserResponse {
+        // @Validアノテーションにより自動的にバリデーションが実行される
+        val user = userService.createUser(
+            CreateUserCommand(
+                name = request.name,
+                email = request.email,
+                age = request.age
+            )
+        )
+
+        return user.toResponse()
+    }
+}
+```
+
+**注意**: `@RestController`では`@Valid`アノテーションが自動的に機能するため、手動でのバリデーション実行は不要です。
+
+バリデーションエラーは`GlobalExceptionHandler`で統一的に処理される。
+
+```kotlin
+// ApplicationException.BadRequest.Validationがスローされた場合の例
+{
+  "type": "https://api.example.com/problems/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "detail": "Validation failed",
+  "instance": "/api/users",
+  "errors": [
+    {
+      "field": "email",
+      "message": "Email must be a valid email address"
+    },
+    {
+      "field": "name",
+      "message": "Name is required"
+    }
+  ]
+}
+```
+
+### クロスフィールドバリデーション
+
+複数フィールドにまたがるバリデーションで、**入力値のみから判定可能な場合**はRequest DTOに記述できる。
+
+```kotlin
+// presentation/dto/ReservationRequest.kt
+data class CreateReservationRequest(
+    @field:NotNull
+    val startAt: Instant?,
+
+    @field:NotNull
+    val endAt: Instant?,
+) {
+    // 複数フィールドのバリデーション
+    @get:AssertTrue(message = "End time must be after start time")
+    val isValidDateRange: Boolean
+        get() = startAt != null && endAt != null && endAt.isAfter(startAt)
+}
+```
+
+より複雑な場合はカスタムバリデーターを使用：
+
+```kotlin
+// カスタムアノテーション
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.RUNTIME)
+@Constraint(validatedBy = [DateRangeValidator::class])
+annotation class ValidDateRange(
+    val message: String = "Invalid date range",
+    val groups: Array<KClass<*>> = [],
+    val payload: Array<KClass<out Payload>> = []
+)
+
+// バリデーター実装
+class DateRangeValidator : ConstraintValidator<ValidDateRange, CreateReservationRequest> {
+    override fun isValid(value: CreateReservationRequest, context: ConstraintValidatorContext): Boolean {
+        if (value.startAt == null || value.endAt == null) {
+            return true  // @NotNullで個別にチェックするため、ここではスキップ
+        }
+
+        // 終了日時が開始日時より後であること
+        if (!value.endAt.isAfter(value.startAt)) {
+            context.disableDefaultConstraintViolation()
+            context.buildConstraintViolationWithTemplate("End time must be after start time")
+                .addPropertyNode("endAt")
+                .addConstraintViolation()
+            return false
+        }
+
+        // 予約期間が30日以内であること
+        if (ChronoUnit.DAYS.between(value.startAt, value.endAt) > 30) {
+            context.disableDefaultConstraintViolation()
+            context.buildConstraintViolationWithTemplate("Reservation period must not exceed 30 days")
+                .addPropertyNode("endAt")
+                .addConstraintViolation()
+            return false
+        }
+
+        return true
+    }
+}
+
+// 使用例
+@ValidDateRange
+data class CreateReservationRequest(
+    @field:NotNull(message = "Start time is required")
+    val startAt: Instant?,
+
+    @field:NotNull(message = "End time is required")
+    val endAt: Instant?,
+
+    @field:Positive(message = "Number of guests must be positive")
+    val numberOfGuests: Int?,
+)
+```
+
+これらのバリデーションエラーはすべて`validation-error`タイプとして扱われる。
+
+### ビジネスロジックエラーの実装
+
+データベースや外部サービスの状態、またはビジネスルールに依存するエラーはApplication/Domain層で検証し、**個別のExceptionをthrow**する。
+
+```kotlin
+// ProblemTypesに追加
+object ProblemTypes {
+    // ... 既存の定義 ...
+    val INSUFFICIENT_STOCK = URI("$BASE_URI/insufficient-stock")
+}
+
+// ApplicationExceptionに追加
+sealed class ApplicationException {
+    // ... 既存の定義 ...
+
+    sealed class BadRequest(message: String) : ApplicationException(message) {
+        override val status: HttpStatus = HttpStatus.BAD_REQUEST
+
+        // ビジネスロジックエラー
+        data class InsufficientStock(
+            val productId: Long,
+            val requested: Int,
+            val available: Int,
+        ) : BadRequest("Insufficient stock for product $productId: requested $requested, available $available") {
+            override val type: URI = ProblemTypes.INSUFFICIENT_STOCK
+            override val title: String = "Insufficient Stock"
+        }
+    }
+}
+
+// Serviceでの使用例
 @Service
 class OrderService(
     private val orderRepository: OrderRepository,
     private val inventoryService: InventoryService,
 ) {
     suspend fun create(request: CreateOrderRequest): Order {
-        val errors = mutableListOf<ApplicationException.BadRequest.Validation.FieldError>()
-
-        // 在庫チェック
+        // ビジネスロジックチェック: 在庫確認
         request.items.forEach { item ->
             val available = inventoryService.getAvailableQuantity(item.productId)
             if (available < item.quantity) {
-                errors.add(
-                    ApplicationException.BadRequest.Validation.FieldError(
-                        field = "items[${item.productId.value}].quantity",
-                        message = "Requested quantity exceeds available stock ($available)",
-                    )
+                // 個別のExceptionをthrow（バリデーションエラーではない）
+                throw ApplicationException.BadRequest.InsufficientStock(
+                    productId = item.productId,
+                    requested = item.quantity,
+                    available = available
                 )
             }
         }
 
-        if (errors.isNotEmpty()) {
-            throw ApplicationException.BadRequest.Validation(errors)
+        // ビジネスロジックチェック: メール重複確認
+        if (userRepository.existsByEmail(request.email)) {
+            throw ApplicationException.BadRequest.DuplicateEmail(request.email)
         }
 
         // 注文作成処理
@@ -423,6 +745,8 @@ class OrderService(
 }
 ```
 
+**重要**: `ApplicationException.BadRequest.Validation`は入力値のフォーマットエラー専用。ビジネスロジックエラーには使用しない。
+
 ## ロギング
 
 ### ログレベルの基準
@@ -430,8 +754,7 @@ class OrderService(
 | 例外の種類           | ログレベル | 理由                                           |
 | -------------------- | ---------- | ---------------------------------------------- |
 | NotFound             | INFO       | 正常なフロー（存在しないリソースへのアクセス） |
-| BadRequest           | INFO       | クライアントの入力エラー                       |
-| Conflict             | WARN       | ビジネスルール違反（注意が必要）               |
+| BadRequest           | INFO       | クライアントの入力エラー・ビジネスルール違反   |
 | ExternalServiceError | ERROR      | 外部システムの障害                             |
 | Internal             | ERROR      | 予期しないエラー                               |
 

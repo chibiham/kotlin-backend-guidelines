@@ -2,94 +2,65 @@
 
 ## 基本方針
 
-1. **OAuth 2.0 + PKCE**による認可フローを採用する
-2. **RFC 6750**に準拠した Bearer Token エラーレスポンスを返す
-3. **Spring Security**でセキュリティを一元管理する
-4. 機密情報は環境変数または外部シークレット管理サービスで管理する
+1. **OAuth 2.0 Resource Server**として動作する
+2. **Opaque Token**を使用し、トークンイントロスペクションで検証する
+3. **RFC 6750**に準拠した Bearer Token エラーレスポンスを返す
+4. **Spring Security**でセキュリティを一元管理する
+5. **OAuth 2.0 Scope**によりエンドポイントのアクセス制御を行う
+6. 機密情報は環境変数または外部シークレット管理サービスで管理する
 
 ## 認証・認可の概要
 
 ### アーキテクチャ
 
 ```
-┌─────────┐     ┌─────────────────┐     ┌──────────────────┐
-│ Client  │────▶│  Authorization  │────▶│  Resource Server │
-│  (SPA)  │     │     Server      │     │   (この API)      │
-└─────────┘     └─────────────────┘     └──────────────────┘
-     │                  │                        │
-     │  1. 認可リクエスト  │                        │
-     │  (PKCE)          │                        │
-     │─────────────────▶│                        │
-     │                  │                        │
-     │  2. 認可コード     │                        │
-     │◀─────────────────│                        │
-     │                  │                        │
-     │  3. トークン交換   │                        │
-     │─────────────────▶│                        │
-     │                  │                        │
-     │  4. アクセストークン │                        │
-     │◀─────────────────│                        │
-     │                  │                        │
-     │  5. APIリクエスト (Bearer Token)            │
-     │────────────────────────────────────────────▶│
-     │                                            │
-     │  6. レスポンス                               │
-     │◀────────────────────────────────────────────│
+┌──────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│   Client     │────▶│  Authorization  │────▶│  Resource Server │
+│ (SPA/API等)  │     │     Server      │     │   (この API)      │
+└──────────────┘     └─────────────────┘     └──────────────────┘
+     │                       │                        │
+     │  1. トークン取得         │                        │
+     │  (認可コード or          │                        │
+     │   client_credentials) │                        │
+     │─────────────────────▶│                        │
+     │                       │                        │
+     │  2. アクセストークン      │                        │
+     │  (Opaque Token)      │                        │
+     │◀─────────────────────│                        │
+     │                       │                        │
+     │  3. APIリクエスト (Bearer Token)               │
+     │───────────────────────────────────────────────▶│
+     │                       │                        │
+     │                       │  4. Token Introspection│
+     │                       │◀───────────────────────│
+     │                       │                        │
+     │                       │  5. Token Info         │
+     │                       │───────────────────────▶│
+     │                       │                        │
+     │  6. レスポンス                                   │
+     │◀───────────────────────────────────────────────│
 ```
 
 ### 本 API の役割
 
-本 API は**Resource Server**として動作する。認可サーバー（Keycloak、Auth0、Cognito 等）から発行されたアクセストークンを検証し、リソースへのアクセスを制御する。
+本 API は**OAuth 2.0 Resource Server**として動作する。
 
-## PKCE (Proof Key for Code Exchange)
+- 認可サーバー（Keycloak、Auth0、Cognito 等）から発行されたOpaque Tokenを受け取る
+- トークンイントロスペクションエンドポイントでトークンの有効性を検証する
+- トークンに含まれるscopeに基づいてアクセス制御を行う
 
-### PKCE とは
+### サポートする OAuth 2.0 フロー
 
-PKCE は認可コード横取り攻撃を防ぐための OAuth 2.0 拡張（RFC 7636）。パブリッククライアント（SPA、モバイルアプリ）で必須。
+| フロー | 用途 | クライアント例 |
+|--------|------|---------------|
+| 認可コードフロー | ユーザー認証が必要 | SPA, Webアプリケーション |
+| Client Credentials | サーバー間通信 | バックエンドサービス、バッチ処理 |
 
-### フロー
-
-```
-1. クライアント: code_verifier（ランダム文字列）を生成
-2. クライアント: code_challenge = SHA256(code_verifier) をBase64URLエンコード
-3. クライアント: 認可リクエストに code_challenge を含める
-4. 認可サーバー: 認可コードを発行
-5. クライアント: トークンリクエストに code_verifier を含める
-6. 認可サーバー: code_verifierをハッシュ化し、保存したcode_challengeと比較
-7. 認可サーバー: 一致すればトークンを発行
-```
-
-### クライアント側の実装例（参考）
-
-```javascript
-// code_verifier の生成
-function generateCodeVerifier() {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  return base64UrlEncode(array);
-}
-
-// code_challenge の生成
-async function generateCodeChallenge(verifier) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return base64UrlEncode(new Uint8Array(hash));
-}
-
-// 認可リクエスト
-const authUrl = new URL("https://auth.example.com/authorize");
-authUrl.searchParams.set("response_type", "code");
-authUrl.searchParams.set("client_id", CLIENT_ID);
-authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
-authUrl.searchParams.set("scope", "openid profile email");
-authUrl.searchParams.set("code_challenge", codeChallenge);
-authUrl.searchParams.set("code_challenge_method", "S256");
-```
+**注意**: Resource Serverとして、クライアントがどのフローでトークンを取得したかは意識せず、トークンの有効性とscopeのみを検証する。
 
 ## Spring Security 設定
 
-### Resource Server 設定
+### Resource Server 設定（Opaque Token）
 
 ```kotlin
 @Configuration
@@ -104,40 +75,28 @@ class SecurityConfig {
             .authorizeExchange { exchanges ->
                 exchanges
                     // 公開エンドポイント
-                    .pathMatchers("/api/v1/health", "/api/v1/info").permitAll()
+                    .pathMatchers("/api/health", "/api/info").permitAll()
                     .pathMatchers("/api-docs/**", "/swagger-ui/**").permitAll()
-                    // 認証が必要なエンドポイント
-                    .pathMatchers("/api/v1/**").authenticated()
+
+                    // Scopeベースのアクセス制御
+                    .pathMatchers(HttpMethod.GET, "/api/users/**").hasAuthority("SCOPE_users:read")
+                    .pathMatchers(HttpMethod.POST, "/api/users/**").hasAuthority("SCOPE_users:write")
+                    .pathMatchers(HttpMethod.PUT, "/api/users/**").hasAuthority("SCOPE_users:write")
+                    .pathMatchers(HttpMethod.DELETE, "/api/users/**").hasAuthority("SCOPE_users:delete")
+
+                    .pathMatchers(HttpMethod.GET, "/api/orders/**").hasAuthority("SCOPE_orders:read")
+                    .pathMatchers(HttpMethod.POST, "/api/orders/**").hasAuthority("SCOPE_orders:write")
+
+                    // その他は認証必須
+                    .pathMatchers("/api/**").authenticated()
                     .anyExchange().denyAll()
             }
             .oauth2ResourceServer { oauth2 ->
-                oauth2.jwt { jwt ->
-                    jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())
-                }
+                oauth2.opaqueToken { }  // Opaque Token使用
                 oauth2.authenticationEntryPoint(bearerTokenAuthenticationEntryPoint())
                 oauth2.accessDeniedHandler(bearerTokenAccessDeniedHandler())
             }
             .build()
-    }
-
-    @Bean
-    fun jwtAuthenticationConverter(): ReactiveJwtAuthenticationConverter {
-        val converter = ReactiveJwtAuthenticationConverter()
-        converter.setJwtGrantedAuthoritiesConverter(jwtGrantedAuthoritiesConverter())
-        return converter
-    }
-
-    @Bean
-    fun jwtGrantedAuthoritiesConverter(): Converter<Jwt, Flux<GrantedAuthority>> {
-        return Converter { jwt ->
-            // Keycloakの場合: realm_access.roles からロールを抽出
-            val realmAccess = jwt.getClaimAsMap("realm_access")
-            val roles = (realmAccess?.get("roles") as? List<*>)
-                ?.filterIsInstance<String>()
-                ?: emptyList()
-
-            Flux.fromIterable(roles.map { SimpleGrantedAuthority("ROLE_$it") })
-        }
     }
 
     @Bean
@@ -163,11 +122,23 @@ spring:
   security:
     oauth2:
       resourceserver:
-        jwt:
-          issuer-uri: https://auth.example.com/realms/my-realm
-          # または jwk-set-uri を直接指定
-          # jwk-set-uri: https://auth.example.com/realms/my-realm/protocol/openid-connect/certs
+        opaquetoken:
+          introspection-uri: https://auth.example.com/realms/my-realm/protocol/openid-connect/token/introspect
+          client-id: ${OAUTH2_CLIENT_ID}
+          client-secret: ${OAUTH2_CLIENT_SECRET}
 ```
+
+### Scope命名規則
+
+`{resource}:{action}` 形式でscopeを定義する。
+
+| Scope | 説明 | 例 |
+|-------|------|-----|
+| `users:read` | ユーザー情報の読み取り | GET /api/users |
+| `users:write` | ユーザー情報の作成・更新 | POST/PUT /api/users |
+| `users:delete` | ユーザー情報の削除 | DELETE /api/users |
+| `orders:read` | 注文情報の読み取り | GET /api/orders |
+| `orders:write` | 注文情報の作成・更新 | POST/PUT /api/orders |
 
 ## RFC 6750 Bearer Token エラーレスポンス
 
@@ -282,139 +253,61 @@ class BearerTokenAccessDeniedHandler : ServerAccessDeniedHandler {
 }
 ```
 
-## ロールベースアクセス制御
+## Scopeベースのアクセス制御
 
-### Handler での権限チェック
+### 基本方針
 
-```kotlin
-@Component
-class AdminUserHandler(
-    private val userService: UserService,
-) {
-    suspend fun deleteUser(request: ServerRequest): ServerResponse {
-        val principal = request.awaitPrincipal()
-            ?: throw ApplicationException.Unauthorized("Authentication required")
+**アクセス制御はSecurityConfigでScopeベースに行い、ServiceやController層では権限チェックを行わない。**
 
-        val authorities = (principal as JwtAuthenticationToken).authorities
-        if (authorities.none { it.authority == "ROLE_ADMIN" }) {
-            throw ApplicationException.Forbidden("Admin role required")
-        }
+- ✅ SecurityConfigで`hasAuthority("SCOPE_xxx")`を使用
+- ❌ Serviceで`@PreAuthorize`を使用しない
+- ❌ Controllerで手動の権限チェックを行わない
 
-        val id = UserId(request.pathVariable("id").toLong())
-        userService.delete(id)
+### 理由
 
-        return ServerResponse.noContent().buildAndAwait()
-    }
-}
-```
+1. **責務の分離**: セキュリティ設定は一箇所に集約
+2. **テスト容易性**: ビジネスロジックとセキュリティロジックが分離される
+3. **保守性**: セキュリティポリシーの変更が容易
 
-### メソッドセキュリティ
+### トークン情報の取得
 
 ```kotlin
-@Configuration
-@EnableReactiveMethodSecurity
-class MethodSecurityConfig
+// Controllerでトークン情報を取得
+@RestController
+@RequestMapping("/api/orders")
+class OrderController(private val orderService: OrderService) {
 
-@Service
-class UserService(private val userRepository: UserRepository) {
+    @GetMapping("/my")
+    suspend fun findMyOrders(authentication: BearerTokenAuthentication): List<OrderResponse> {
+        // Spring Securityが自動的にBearerTokenAuthenticationを注入
+        val userId = authentication.tokenAttributes["sub"]?.toString()?.toLongOrNull()
+            ?: throw ApplicationException.Unauthorized("Invalid token: missing subject")
 
-    @PreAuthorize("hasRole('ADMIN')")
-    suspend fun deleteUser(id: UserId) {
-        userRepository.deleteById(id)
-    }
-
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
-    suspend fun findById(id: UserId): User? {
-        return userRepository.findById(id)
-    }
-
-    @PreAuthorize("#userId == authentication.token.claims['sub']")
-    suspend fun updateProfile(userId: UserId, request: UpdateProfileRequest): User {
-        // 自分自身のプロフィールのみ更新可能
-        val user = userRepository.findById(userId)
-            ?: throw ApplicationException.NotFound.User(userId)
-        return userRepository.save(user.updateProfile(request))
-    }
-}
-```
-
-### カスタム権限チェック
-
-```kotlin
-@Component
-class ResourceAccessChecker(
-    private val orderRepository: OrderRepository,
-) {
-    suspend fun canAccessOrder(orderId: OrderId, principal: Principal): Boolean {
-        val jwt = (principal as JwtAuthenticationToken).token
-        val userId = UserId(jwt.subject.toLong())
-
-        val order = orderRepository.findById(orderId) ?: return false
-        return order.userId == userId
-    }
-}
-
-// Serviceでの使用
-@Service
-class OrderService(
-    private val orderRepository: OrderRepository,
-    private val accessChecker: ResourceAccessChecker,
-) {
-    suspend fun findById(orderId: OrderId, principal: Principal): Order {
-        if (!accessChecker.canAccessOrder(orderId, principal)) {
-            throw ApplicationException.Forbidden("Cannot access this order")
-        }
-        return orderRepository.findById(orderId)
-            ?: throw ApplicationException.NotFound.Order(orderId)
-    }
-}
-```
-
-## JWT クレームの取得
-
-### 認証情報のユーティリティ
-
-```kotlin
-// 拡張関数でJWT情報を取得しやすくする
-suspend fun ServerRequest.jwtOrNull(): Jwt? {
-    return awaitPrincipal()?.let { (it as? JwtAuthenticationToken)?.token }
-}
-
-suspend fun ServerRequest.jwt(): Jwt {
-    return jwtOrNull() ?: throw ApplicationException.Unauthorized("Authentication required")
-}
-
-suspend fun ServerRequest.currentUserId(): UserId {
-    return UserId(jwt().subject.toLong())
-}
-
-// Handler での使用
-@Component
-class OrderHandler(private val orderService: OrderService) {
-
-    suspend fun findMyOrders(request: ServerRequest): ServerResponse {
-        val userId = request.currentUserId()
         val orders = orderService.findByUserId(userId)
-        return ServerResponse.ok().bodyValueAndAwait(orders.map { it.toResponse() })
+        return orders.map { it.toResponse() }
+    }
+
+    @GetMapping("/my/email")
+    suspend fun getCurrentUserEmail(authentication: BearerTokenAuthentication?): String? {
+        // Optional injection: 認証が不要なエンドポイントで使用
+        return authentication?.tokenAttributes?.get("email")?.toString()
     }
 }
 ```
 
-### JWT クレームの構造例
+### トークンイントロスペクションレスポンス例
 
 ```json
 {
-  "sub": "12345",
-  "iss": "https://auth.example.com/realms/my-realm",
-  "aud": "my-api",
+  "active": true,
+  "scope": "users:read users:write orders:read",
+  "client_id": "my-client",
+  "username": "john.doe",
+  "token_type": "Bearer",
   "exp": 1704067200,
   "iat": 1704063600,
-  "email": "user@example.com",
-  "name": "John Doe",
-  "realm_access": {
-    "roles": ["user", "admin"]
-  },
-  "scope": "openid profile email"
+  "sub": "12345",
+  "email": "user@example.com"
 }
 ```
 
@@ -558,7 +451,7 @@ class SecurityTest {
     @Test
     fun `should return 401 when no token provided`() {
         webTestClient.get()
-            .uri("/api/v1/users")
+            .uri("/api/users")
             .exchange()
             .expectStatus().isUnauthorized
             .expectHeader().valueMatches(
@@ -568,44 +461,63 @@ class SecurityTest {
     }
 
     @Test
-    @WithMockUser(roles = ["USER"])
-    fun `should return 200 when authenticated`() {
+    fun `should return 200 when authenticated with correct scope`() {
         webTestClient.get()
-            .uri("/api/v1/users/me")
+            .uri("/api/users")
+            .headers { it.setBearerAuth(createMockToken("users:read")) }
             .exchange()
             .expectStatus().isOk
     }
 
     @Test
-    @WithMockUser(roles = ["USER"])
-    fun `should return 403 when insufficient role`() {
+    fun `should return 403 when insufficient scope`() {
         webTestClient.delete()
-            .uri("/api/v1/admin/users/123")
+            .uri("/api/users/123")
+            .headers { it.setBearerAuth(createMockToken("users:read")) }  // users:delete が必要
             .exchange()
             .expectStatus().isForbidden
+    }
+
+    private fun createMockToken(scope: String): String {
+        // テスト用のトークン生成（実際の実装は認可サーバーのモックに依存）
+        return "mock-token-with-scope-$scope"
     }
 }
 ```
 
-### JWT モックの作成
+### Opaque Token モックの作成
 
 ```kotlin
 @TestConfiguration
 class TestSecurityConfig {
 
     @Bean
-    fun jwtDecoder(): ReactiveJwtDecoder {
-        return ReactiveJwtDecoder { token ->
-            val claims = mapOf(
-                "sub" to "12345",
-                "realm_access" to mapOf("roles" to listOf("user")),
-                "email" to "test@example.com",
-            )
+    fun opaqueTokenIntrospector(): ReactiveOpaqueTokenIntrospector {
+        return ReactiveOpaqueTokenIntrospector { token ->
+            // トークンに応じたモック情報を返す
+            val attributes = when {
+                token.contains("users:read") -> mapOf(
+                    "active" to true,
+                    "scope" to "users:read",
+                    "sub" to "12345",
+                    "client_id" to "test-client",
+                    "email" to "test@example.com"
+                )
+                token.contains("users:write") -> mapOf(
+                    "active" to true,
+                    "scope" to "users:read users:write",
+                    "sub" to "12345",
+                    "client_id" to "test-client"
+                )
+                else -> mapOf("active" to false)
+            }
+
             Mono.just(
-                Jwt.withTokenValue(token)
-                    .header("alg", "RS256")
-                    .claims { it.putAll(claims) }
-                    .build()
+                OAuth2IntrospectionAuthenticatedPrincipal(
+                    attributes["sub"] as? String ?: "unknown",
+                    attributes,
+                    listOf(SimpleGrantedAuthority("SCOPE_${attributes["scope"]}"))
+                )
             )
         }
     }
