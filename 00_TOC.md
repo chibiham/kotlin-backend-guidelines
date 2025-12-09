@@ -26,6 +26,7 @@
 | 07  | [非同期・並行処理](./07-concurrency.md)       | Virtual Threads、Coroutines、HTTP クライアント             |
 | 08  | [テスト](./08-testing.md)                     | MockK、テスト設計、統合テスト                              |
 | 09  | [設定・環境管理](./09-configuration.md)       | application.yml、プロファイル、機密情報管理                |
+| 10  | [ロギング](./10-logging.md)                   | JSON ロギング、New Relic 連携、MDC 設計                    |
 
 ## 読み方
 

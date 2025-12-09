@@ -712,79 +712,12 @@ class FeatureConfig {
 
 ## ロギング設定
 
-### Logback設定（JSON形式で統一）
+ロギングに関する詳細なガイドラインは、[10-logging.md](./10-logging.md)を参照してください。
 
-**全環境でLogstashEncoderを使用してJSON形式でログを出力する。**
-
-#### 依存関係の追加
-
-```kotlin
-// build.gradle.kts
-dependencies {
-    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
-}
-```
-
-#### Logback設定ファイル
-
-```xml
-<!-- src/main/resources/logback-spring.xml -->
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
-
-    <!-- JSON形式のAppender（全環境共通） -->
-    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <!-- 基本フィールド -->
-            <includeMdcKeyName>traceId</includeMdcKeyName>
-            <includeMdcKeyName>spanId</includeMdcKeyName>
-            <includeMdcKeyName>userId</includeMdcKeyName>
-
-            <!-- タイムスタンプ形式 -->
-            <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSZZ</timestampPattern>
-
-            <!-- カスタムフィールド -->
-            <customFields>{"application":"my-app"}</customFields>
-        </encoder>
-    </appender>
-
-    <!-- 全プロファイルで共通のAppenderを使用 -->
-    <root level="INFO">
-        <appender-ref ref="JSON_CONSOLE"/>
-    </root>
-
-    <!-- ログレベルはapplication.ymlで制御 -->
-</configuration>
-```
-
-### ログレベルの制御
-
-ログレベルは`application.yml`および各プロファイル設定ファイルで制御します。
-
-```yaml
-# application.yml（本番用）
-logging:
-  level:
-    root: WARN
-    com.example.myapp: INFO
-    org.springframework.r2dbc: WARN
-
----
-# application-local.yml（開発用）
-logging:
-  level:
-    root: INFO
-    com.example.myapp: DEBUG
-    org.springframework.r2dbc: DEBUG
-
----
-# application-e2e.yml（E2Eテスト用）
-logging:
-  level:
-    root: WARN
-    com.example.myapp: INFO
-```
+- JSON形式でのログ出力設定
+- New Relic TraceIdとの連携
+- CoroutineでのMDC伝搬
+- Kotlin特有のロギングベストプラクティス
 
 ## ヘルスチェック
 
