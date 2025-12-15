@@ -2,13 +2,13 @@
 
 ## 基本方針
 
-1. **JSON形式で統一** - すべての環境でLogstashEncoderを使用
+1. **JSON 形式で統一** - すべての環境で LogstashEncoder を使用
 2. **構造化ログ** - 検索・分析しやすい形式で出力
-3. **TraceIdで追跡** - リクエスト全体を通してログを紐付ける
+3. **TraceId で追跡** - リクエスト全体を通してログを紐付ける
 4. **適切なログレベル** - 環境ごとに最適なレベルを設定
-5. **MDCでコンテキスト情報を付与** - TraceId、UserIdなどを自動付与
+5. **MDC でコンテキスト情報を付与** - TraceId などを自動付与
 
-## Logback設定
+## Logback 設定
 
 ### 依存関係の追加
 
@@ -20,9 +20,9 @@ dependencies {
 }
 ```
 
-### Logback設定ファイル
+### Logback 設定ファイル
 
-**全環境でJSON形式のログを出力します。**
+**全環境で JSON 形式のログを出力します。**
 
 ```xml
 <!-- src/main/resources/logback-spring.xml -->
@@ -87,9 +87,9 @@ logging:
 
 ## ログ出力の基本
 
-### Kotlin Loggingの使用（推奨）
+### Kotlin Logging の使用（推奨）
 
-KotlinではSLF4Jを直接使わず、**kotlin-logging（KotlinLogging）** を使用します。
+Kotlin では SLF4J を直接使わず、**kotlin-logging（KotlinLogging）** を使用します。
 
 **依存関係の追加:**
 
@@ -141,7 +141,7 @@ class UserService(
 }
 ```
 
-### KotlinLoggingを推奨する理由
+### KotlinLogging を推奨する理由
 
 #### 1. 遅延評価による性能向上
 
@@ -153,7 +153,7 @@ logger.debug("User data: ${expensiveOperation()}")
 logger.debug { "User data: ${expensiveOperation()}" }
 ```
 
-#### 2. Kotlinイディオムに沿った記述
+#### 2. Kotlin イディオムに沿った記述
 
 ```kotlin
 // ❌ SLF4J: Javaスタイル（冗長）
@@ -195,12 +195,12 @@ catch (e: Exception) {
 
 ### ログレベルの使い分け
 
-| レベル | 用途 | 例 |
-|--------|------|-----|
-| **ERROR** | 予期しないエラー、システム障害 | 外部API障害、DB接続エラー、予期しない例外 |
-| **WARN** | 注意が必要な状況、潜在的な問題 | リトライ発生、非推奨API使用、ビジネスルール違反 |
-| **INFO** | 重要なビジネスイベント | ユーザー作成、注文完了、重要な状態変更 |
-| **DEBUG** | 詳細なデバッグ情報（開発用） | クエリパラメータ、中間結果、内部状態 |
+| レベル    | 用途                           | 例                                                |
+| --------- | ------------------------------ | ------------------------------------------------- |
+| **ERROR** | 予期しないエラー、システム障害 | 外部 API 障害、DB 接続エラー、予期しない例外      |
+| **WARN**  | 注意が必要な状況、潜在的な問題 | リトライ発生、非推奨 API 使用、ビジネスルール違反 |
+| **INFO**  | 重要なビジネスイベント         | ユーザー作成、注文完了、重要な状態変更            |
+| **DEBUG** | 詳細なデバッグ情報（開発用）   | クエリパラメータ、中間結果、内部状態              |
 
 ```kotlin
 @Service
@@ -227,297 +227,11 @@ class OrderService(
 }
 ```
 
-## New Relic TraceIdのMDC連携
-
-### New Relicの仕組みとログ連携の必要性
-
-New Relicは**Java Agent**として動作し、バイトコードを実行時に書き換えて自動的にトレース情報を収集します。
-
-```bash
-# アプリケーション起動時
-java -javaagent:/path/to/newrelic.jar -jar myapp.jar
-```
-
-**New Relicが自動収集する情報:**
-- 処理フロー（どのメソッドが呼ばれたか）
-- 各処理の実行時間
-- DB クエリ、HTTP リクエストの詳細
-- TraceId と SpanId（階層構造）
-
-**New Relicが収集しない情報:**
-- **アプリケーションログの内容**（`logger.info { }` などの出力）
-- ビジネスロジックの詳細
-- デバッグ用の変数値
-- エラーの詳細なコンテキスト
-
-そのため、**New Relicとアプリケーションログは補完関係**にあります：
-
-| 用途 | New Relic | アプリケーションログ |
-|------|-----------|---------------------|
-| **どこが遅いか** | ✅ 処理時間を可視化 | ❌ |
-| **何が呼ばれたか** | ✅ メソッド呼び出しを記録 | ❌ |
-| **なぜ失敗したか** | ❌ | ✅ エラーメッセージと詳細 |
-| **ビジネスデータ** | ❌ | ✅ 注文ID、金額などの詳細 |
-
-**TraceIdをログに含めることで、New Relicのトレース画面とログを相互に行き来して調査できます。**
-
-### 依存関係の追加
-
-```kotlin
-// build.gradle.kts
-dependencies {
-    implementation("com.newrelic.agent.java:newrelic-api:8.8.0")
-}
-```
-
-### WebFilterでのMDC設定
-
-**重要:** TraceIdのみをMDCに設定します。SpanIdは処理ごとに変わるため、Filterレベルで設定すると意味がありません。
-
-```kotlin
-import com.newrelic.api.agent.NewRelic
-import kotlinx.coroutines.slf4j.MDCContext
-import kotlinx.coroutines.withContext
-import org.slf4j.MDC
-import org.springframework.core.Ordered
-import org.springframework.core.annotation.Order
-import org.springframework.stereotype.Component
-import org.springframework.web.server.ServerWebExchange
-import org.springframework.web.server.WebFilter
-import org.springframework.web.server.WebFilterChain
-import reactor.core.publisher.Mono
-
-@Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
-class NewRelicMdcFilter : WebFilter {
-
-    override fun filter(exchange: ServerWebExchange, chain: WebFilterChain): Mono<Void> {
-        return Mono.deferContextual { contextView ->
-            // New RelicからTraceIdのみを取得
-            // TraceIdはリクエスト全体で1つなので、Filterで設定する意味がある
-            val traceId = NewRelic.getAgent().traceMetadata.traceId
-
-            // MDCにTraceIdのみを設定
-            // SpanIdは処理ごとに変わるため、Filterレベルでは設定しない
-            MDC.put("traceId", traceId)
-
-            try {
-                chain.filter(exchange)
-            } finally {
-                // リクエスト処理後にMDCをクリア
-                MDC.remove("traceId")
-            }
-        }
-    }
-}
-```
-
-**TraceIdとSpanIdの違い:**
-
-| 項目 | TraceId | SpanId |
-|------|---------|--------|
-| **粒度** | リクエスト全体 | 個々の処理単位 |
-| **数** | リクエストごとに1つ | リクエスト内で複数 |
-| **用途** | 関連する処理をまとめる | 処理の内訳を追跡 |
-| **ログへの含め方** | Filterで設定 | 各処理で動的に取得（通常は不要） |
-
-SpanIdの階層構造はNew Relicが自動的に管理するため、アプリケーションログに含める必要はありません。
-
-### WebFlux環境でのMDC伝搬の課題
-
-**重要:** WebFluxはイベント駆動・非同期処理のため、従来のMDC設定では以下の問題があります：
-
-1. **リクエスト境界の喪失**: Reactorのスレッドプールは複数リクエストで共有されるため、MDCが混在する
-2. **Contextの切り替え**: `subscribeOn()`や`publishOn()`でスレッドが変わるとMDCが失われる
-3. **タイミング問題**: Scheduler Hookはタスクスケジュール時に呼ばれるが、リクエストコンテキストとは独立している
-
-これらの理由から、**Reactor Context**を使ってリクエストスコープでtraceIdを伝搬させる必要があります。
-
-### 実装方法: Reactor Contextとカスタムログプロバイダー
-
-#### 1. WebFilterでReactor Contextに設定
-
-```kotlin
-import com.newrelic.api.agent.NewRelic
-import org.springframework.core.Ordered
-import org.springframework.core.annotation.Order
-import org.springframework.stereotype.Component
-import org.springframework.web.server.ServerWebExchange
-import org.springframework.web.server.WebFilter
-import org.springframework.web.server.WebFilterChain
-import reactor.core.publisher.Mono
-
-@Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
-class TraceIdContextFilter : WebFilter {
-
-    override fun filter(exchange: ServerWebExchange, chain: WebFilterChain): Mono<Void> {
-        val traceId = NewRelic.getAgent().traceMetadata.traceId
-
-        // Reactor ContextにtraceIdを設定（リクエストスコープで確実に伝搬される）
-        return chain.filter(exchange)
-            .contextWrite { context ->
-                context.put("traceId", traceId)
-            }
-    }
-}
-```
-
-#### 2. カスタムLogstashプロバイダーでReactor ContextからtraceIdを取得
-
-ログ出力時に毎回`withContext`でMDCを設定するのは煩雑なため、Logbackの拡張機能を使ってReactor Contextから直接traceIdを取得します。
-
-**依存関係の追加:**
-
-```kotlin
-// build.gradle.kts
-dependencies {
-    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
-    implementation("io.projectreactor:reactor-core")
-}
-```
-
-**Logback設定:**
-
-```xml
-<!-- src/main/resources/logback-spring.xml -->
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
-
-    <!-- JSON形式のAppender -->
-    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <!-- Reactor ContextからtraceIdを取得するカスタムプロバイダー -->
-            <provider class="com.example.myapp.logging.ReactorContextJsonProvider"/>
-
-            <!-- タイムスタンプ形式 -->
-            <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSZZ</timestampPattern>
-
-            <!-- カスタムフィールド -->
-            <customFields>{"application":"my-app"}</customFields>
-        </encoder>
-    </appender>
-
-    <root level="INFO">
-        <appender-ref ref="JSON_CONSOLE"/>
-    </root>
-</configuration>
-```
-
-**カスタムプロバイダーの実装:**
-
-```kotlin
-package com.example.myapp.logging
-
-import ch.qos.logback.classic.spi.ILoggingEvent
-import com.fasterxml.jackson.core.JsonGenerator
-import net.logstash.logback.composite.AbstractFieldJsonProvider
-import net.logstash.logback.composite.JsonWritingUtils
-import reactor.core.publisher.Mono
-
-class ReactorContextJsonProvider : AbstractFieldJsonProvider<ILoggingEvent>() {
-
-    override fun writeTo(generator: JsonGenerator, event: ILoggingEvent) {
-        // Reactor ContextからtraceIdを取得してJSONに追加
-        try {
-            Mono.deferContextual { contextView ->
-                val traceId = contextView.getOrDefault<String>("traceId", "")
-                if (traceId.isNotEmpty()) {
-                    JsonWritingUtils.writeStringField(generator, "traceId", traceId)
-                }
-                Mono.empty<Void>()
-            }.block() // ログ出力時は同期的に取得
-        } catch (e: Exception) {
-            // Reactor Context外で実行された場合は何もしない
-        }
-    }
-}
-```
-
-**使用例（アプリケーションコード）:**
-
-```kotlin
-import mu.KotlinLogging
-import org.springframework.stereotype.Service
-
-private val logger = KotlinLogging.logger {}
-
-@Service
-class UserService(
-    private val userRepository: UserRepository,
-) {
-    suspend fun findById(id: UserId): User? {
-        // 特別なwithContextは不要。通常通りログ出力するだけ
-        logger.info { "Finding user: $id" }
-        return userRepository.findById(id.value)?.toDomain()
-    }
-
-    suspend fun create(request: CreateUserRequest): User {
-        logger.info { "Creating user: ${request.email}" }
-        val user = User.create(request)
-        return userRepository.save(user.toEntity()).toDomain()
-    }
-}
-```
-
-### 非推奨: Reactor Scheduler Hook
-
-以下のようなScheduler Hookは**WebFlux環境では使用しないでください**：
-
-```kotlin
-// ❌ 非推奨: リクエスト境界を越えてMDCが混在する可能性がある
-@Bean
-fun reactorSchedulerHook() {
-    Schedulers.onScheduleHook("mdc") { runnable ->
-        val contextMap = MDC.getCopyOfContextMap()
-        Runnable {
-            contextMap?.let { MDC.setContextMap(it) }
-            try {
-                runnable.run()
-            } finally {
-                MDC.clear()
-            }
-        }
-    }
-}
-```
-
-**理由:**
-- スレッドプールは複数のリクエストで共有されるため、MDCが別リクエストと混在する
-- Reactor Contextの方がリクエストスコープで確実に伝搬される
-- ログ出力のたびにMDC設定を書く必要がなく、コードがシンプルになる
-
-### ログ出力例
-
-```json
-{
-  "@timestamp": "2024-01-15T10:30:45.123+09:00",
-  "level": "INFO",
-  "logger": "com.example.myapp.application.UserService",
-  "message": "Finding user: 123",
-  "traceId": "abc123def456",
-  "userId": "123",
-  "application": "my-app",
-  "env": "production"
-}
-```
-
-**ログに含まれる情報:**
-- `@timestamp`: ログ出力日時
-- `level`: ログレベル
-- `logger`: ロガー名（クラス名）
-- `message`: ログメッセージ
-- `traceId`: New Relicとログを紐付けるためのID
-- `userId`: アプリケーション固有のコンテキスト情報
-- `application`: アプリケーション名
-- `env`: 環境名
-
-## New Relicとログの連携
+## New Relic とログの連携
 
 ### 調査フロー例: 「注文処理が失敗した」問題のデバッグ
 
-**1. New Relicでトレースを確認** - どこで時間がかかっているかを特定
+**1. New Relic でトレースを確認** - どこで時間がかかっているかを特定
 
 ```
 TraceId: abc123
@@ -528,11 +242,11 @@ TraceId: abc123
 │  │  └─ Database.update - 20ms
 ```
 
-**わかること:** PaymentGatewayで2.3秒かかっている
+**わかること:** PaymentGateway で 2.3 秒かかっている
 
 **わからないこと:** なぜ失敗したのか、どんなエラーか
 
-**2. TraceIdでログを検索** - ビジネスロジックの詳細を確認
+**2. TraceId でログを検索** - ビジネスロジックの詳細を確認
 
 ```bash
 # CloudWatch / Datadog / Elasticsearchで検索
@@ -546,55 +260,268 @@ filter traceId="abc123"
 {"traceId":"abc123","level":"ERROR","message":"Payment failed: Card declined - insufficient funds"}
 ```
 
-**わかること:** 注文ID、金額、失敗理由（カード残高不足）
+**わかること:** 注文 ID、金額、失敗理由（カード残高不足）
 
 **3. 両方を組み合わせて完全な情報を得る**
+
 - New Relic: 処理フローと性能ボトルネック
 - ログ: ビジネスロジックの詳細とエラー原因
 
-### New Relicとの統合機能
+### New Relic の仕組みとログ連携の必要性
 
-New Relicの一部のプランでは、ログを直接New Relicに送信して統合表示できます。その場合でも、TraceIdがログに含まれていることで自動的に紐付けが行われます。
+New Relic の一部のプランでは、ログを直接 New Relic に送信して統合表示できます。その場合でも、TraceId がログに含まれていることで自動的に紐付けが行われます。
 
-### New Relicが無効な場合のフォールバック
+New Relic は**Java Agent**として動作し、バイトコードを実行時に書き換えて自動的にトレース情報を収集します。
 
-**注意:** New Relicエージェントが有効でない場合（ローカル開発環境など）、`traceId`は空文字列になる可能性があります。その場合は独自のトレースIDを生成することを検討してください。
+```bash
+# アプリケーション起動時
+java -javaagent:/path/to/newrelic.jar -jar myapp.jar
+```
+
+**New Relic が自動収集する情報:**
+
+- 処理フロー（どのメソッドが呼ばれたか）
+- 各処理の実行時間
+- DB クエリ、HTTP リクエストの詳細
+- TraceId と SpanId（階層構造）
+
+**New Relic が収集しない情報:**
+
+- **アプリケーションログの内容**（`logger.info { }` などの出力）
+- ビジネスロジックの詳細
+- デバッグ用の変数値
+- エラーの詳細なコンテキスト
+
+そのため、**New Relic とアプリケーションログは補完関係**にあります：
+
+| 用途               | New Relic                 | アプリケーションログ       |
+| ------------------ | ------------------------- | -------------------------- |
+| **どこが遅いか**   | ✅ 処理時間を可視化       | ❌                         |
+| **何が呼ばれたか** | ✅ メソッド呼び出しを記録 | ❌                         |
+| **なぜ失敗したか** | ❌                        | ✅ エラーメッセージと詳細  |
+| **ビジネスデータ** | ❌                        | ✅ 注文 ID、金額などの詳細 |
+
+**TraceId をログに含めることで、New Relic のトレース画面とログを相互に行き来して調査できます。**
+
+**TraceId と SpanId の違い:**
+
+| 項目               | TraceId                | SpanId                           |
+| ------------------ | ---------------------- | -------------------------------- |
+| **粒度**           | リクエスト全体         | 個々の処理単位                   |
+| **数**             | リクエストごとに 1 つ  | リクエスト内で複数               |
+| **用途**           | 関連する処理をまとめる | 処理の内訳を追跡                 |
+| **ログへの含め方** | Filter で設定          | 各処理で動的に取得（通常は不要） |
+
+SpanId の階層構造は New Relic が自動的に管理するため、アプリケーションログに含める必要はありません。
+
+### traceId の出力と New Relic が無効な場合のフォールバック
+
+**重要:** TraceId のみを MDC に設定します。SpanId は処理ごとに変わるため、Filter レベルで設定しても意味がありません。
+
+**注意:** New Relic エージェントが有効でない場合（ローカル開発環境など）、`traceId`は空文字列になる可能性があります。その場合は独自のトレース ID を生成することを検討してください。
 
 ```kotlin
+import com.newrelic.api.agent.NewRelic
+import org.slf4j.MDC
+import org.springframework.core.Ordered
+import org.springframework.core.annotation.Order
+import org.springframework.stereotype.Component
+import org.springframework.web.server.ServerWebExchange
+import org.springframework.web.server.WebFilter
+import org.springframework.web.server.WebFilterChain
+import reactor.core.publisher.Mono
+import java.util.UUID
+
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 class TraceIdMdcFilter : WebFilter {
 
     override fun filter(exchange: ServerWebExchange, chain: WebFilterChain): Mono<Void> {
-        return Mono.deferContextual { contextView ->
-            // New Relicが無効な場合のフォールバック
-            val traceId = try {
-                NewRelic.getAgent().traceMetadata.traceId.takeIf { it.isNotBlank() }
-            } catch (e: Exception) {
-                null
-            } ?: UUID.randomUUID().toString()
+        // New Relicが無効な場合のフォールバック
+        val traceId = try {
+            NewRelic.getAgent().traceMetadata.traceId.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            null
+        } ?: UUID.randomUUID().toString()
 
-            MDC.put("traceId", traceId)
+        MDC.put("traceId", traceId)
 
-            try {
-                chain.filter(exchange)
-            } finally {
-                MDC.remove("traceId")
-            }
-        }
+        return chain.filter(exchange)
     }
 }
 ```
 
-## カスタムMDCフィールドの追加
+## MDC 連携
 
-### UserIdの追加
-
-認証済みユーザーのIDもReactor Contextに追加し、ログに含めます。
-
-#### 1. WebFilterでReactor ContextにuserIdを追加
+### 依存関係の追加
 
 ```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("com.newrelic.agent.java:newrelic-api:8.8.0")
+    implementation("io.micrometer:context-propagation:1.0.6")
+}
+```
+
+### コンテキスト伝播の設定
+
+WebFlux はイベント駆動・非同期処理のため、ThreadLocal ベースの MDC は異なるスレッド間で自動的に伝播されません。**Micrometer Context Propagation**を使用することで、MDC が Reactor Context に自動的に伝播されます。
+
+#### Spring Boot 3 での設定（必須）
+
+Spring Boot 3 では、以下の設定が**必須**です。この設定がないと、MDC の値は Reactor Context に伝播されません：
+
+```yaml
+# application.yml
+spring:
+  reactor:
+    context-propagation: auto
+```
+
+この設定により、Spring Boot が自動的に`Hooks.enableAutomaticContextPropagation()`を呼び出し、MDC の値が Reactor Context に伝播されるようになります。
+
+**重要:** この設定は**デフォルトで無効**なため、必ず明示的に設定する必要があります
+
+#### WebFilter での MDC 設定
+
+```kotlin
+import com.newrelic.api.agent.NewRelic
+import org.slf4j.MDC
+import org.springframework.core.Ordered
+import org.springframework.core.annotation.Order
+import org.springframework.stereotype.Component
+import org.springframework.web.server.ServerWebExchange
+import org.springframework.web.server.WebFilter
+import org.springframework.web.server.WebFilterChain
+import reactor.core.publisher.Mono
+
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
+class TraceIdMdcFilter : WebFilter {
+
+    override fun filter(exchange: ServerWebExchange, chain: WebFilterChain): Mono<Void> {
+        // New RelicからTraceIdのみを取得
+        // TraceIdはリクエスト全体で1つなので、Filterで設定する意味がある
+        val traceId = NewRelic.getAgent().traceMetadata.traceId
+
+        // MDCにTraceIdのみを設定
+        // Micrometer Context Propagationが以下を自動処理:
+        // - Reactor Contextへの伝播
+        // - スレッド切り替え時の復元
+        // - リクエスト完了時のクリーンアップ
+        MDC.put("traceId", traceId)
+
+        return chain.filter(exchange)
+    }
+}
+```
+
+**MDC.remove()は不要**
+
+`Hooks.enableAutomaticContextPropagation()`により、Micrometer Context Propagation が自動的に ThreadLocal のライフサイクルを管理します：
+
+1. **伝播**: MDC の値が Reactor Context に自動的にコピーされる
+2. **復元**: スレッド切り替え時に、Reactor Context から MDC に復元される
+3. **クリーンアップ**: リクエスト処理完了時に、ThreadLocal が自動的にクリアされる
+
+したがって、`doFinally { MDC.remove("traceId") }`のような明示的なクリーンアップは不要です。これにより、ThreadLocal 汚染の心配なく、シンプルなコードを保つことができます。
+
+### Micrometer Context Propagation の仕組み
+
+**Micrometer Context Propagation**は、ThreadLocal（MDC 等）と Reactor Context の橋渡しをする仕組みです。
+
+#### 従来の課題
+
+WebFlux はイベント駆動・非同期処理のため、ThreadLocal ベースの MDC は以下の問題がありました：
+
+1. **スレッド切り替え時にデータが失われる**: `subscribeOn()`や`publishOn()`でスレッドが変わると MDC が失われる
+2. **ThreadLocal 汚染のリスク**: スレッドプールは複数リクエストで共有されるため、前のリクエストの MDC 値が残る可能性
+
+#### Micrometer Context Propagation による解決
+
+`Hooks.enableAutomaticContextPropagation()`を有効化すると：
+
+1. **MDC → Reactor Context**: MDC に設定された値が自動的に Reactor Context にコピーされる
+2. **Reactor Context → MDC**: スレッドが切り替わる際、Reactor Context の値が MDC に復元される
+3. **自動クリーンアップ**: リクエスト処理完了時に、ThreadLocal が自動的にクリアされる
+4. **リクエストスコープの維持**: Reactor Context はリクエストスコープで管理されるため、リクエスト間の混在が防止される
+
+**つまり、通常の MDC 設定がそのまま使え、ThreadLocal 汚染の心配もない**ようになります。
+
+#### ThreadLocalAccessor の登録
+
+Micrometer Context Propagation は、内部的に以下のような`ThreadLocalAccessor`を登録しています：
+
+```kotlin
+// 内部実装（簡略化）
+ContextRegistry.getInstance().registerThreadLocalAccessor(
+    "traceId",
+    { MDC.get("traceId") },           // getValue: 読み取り
+    { value -> MDC.put("traceId", value) }, // setValue: 設定
+    { MDC.remove("traceId") }         // reset: クリーンアップ
+)
+```
+
+このため、Reactor Context のライフサイクルに合わせて、ThreadLocal も自動的に管理されます。
+
+#### 使用例（アプリケーションコード）
+
+```kotlin
+import mu.KotlinLogging
+import org.springframework.stereotype.Service
+
+private val logger = KotlinLogging.logger {}
+
+@Service
+class UserService(
+    private val userRepository: UserRepository,
+) {
+    suspend fun findById(id: UserId): User? {
+        // 特別な設定不要。通常通りログ出力するだけでtraceIdが含まれる
+        logger.info { "Finding user: $id" }
+        return userRepository.findById(id.value)?.toDomain()
+    }
+
+    suspend fun create(request: CreateUserRequest): User {
+        logger.info { "Creating user: ${request.email}" }
+        val user = User.create(request)
+        return userRepository.save(user.toEntity()).toDomain()
+    }
+}
+```
+
+### ログ出力例
+
+```json
+{
+  "@timestamp": "2024-01-15T10:30:45.123+09:00",
+  "level": "INFO",
+  "logger": "com.example.myapp.application.UserService",
+  "message": "Finding user: 123",
+  "traceId": "abc123def456",
+  "application": "my-app"
+}
+```
+
+**ログに含まれる情報:**
+
+- `@timestamp`: ログ出力日時
+- `level`: ログレベル
+- `logger`: ロガー名（クラス名）
+- `message`: ログメッセージ
+- `traceId`: New Relic とログを紐付けるための ID
+- `application`: アプリケーション名
+
+## カスタム MDC フィールドの追加例
+
+### UserId の追加
+
+認証済みユーザーの ID も MDC に追加し、ログに含めます。Micrometer Context Propagation により、MDC の値は自動的に Reactor Context に伝播されます。
+
+#### WebFilter で MDC に userId を追加
+
+```kotlin
+import org.slf4j.MDC
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
 import org.springframework.security.core.Authentication
@@ -606,8 +533,8 @@ import org.springframework.web.server.WebFilterChain
 import reactor.core.publisher.Mono
 
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 1)  // TraceIdContextFilterの次に実行
-class UserIdContextFilter : WebFilter {
+@Order(Ordered.HIGHEST_PRECEDENCE + 1)  // TraceIdMdcFilterの次に実行
+class UserIdMdcFilter : WebFilter {
 
     override fun filter(exchange: ServerWebExchange, chain: WebFilterChain): Mono<Void> {
         return exchange.getPrincipal<Authentication>()
@@ -620,96 +547,25 @@ class UserIdContextFilter : WebFilter {
                     else -> null
                 }
 
-                // Reactor ContextにuserIdを設定
+                // MDCにuserIdを設定
+                // Micrometer Context Propagationにより、自動的にReactor Contextに伝播され、
+                // リクエスト完了時に自動クリーンアップされる
+                userId?.let { MDC.put("userId", it) }
+
                 chain.filter(exchange)
-                    .contextWrite { context ->
-                        userId?.let { context.put("userId", it) } ?: context
-                    }
             }
             .switchIfEmpty(chain.filter(exchange))
     }
 }
 ```
 
-#### 2. ReactorContextJsonProviderでuserIdも取得
-
-```kotlin
-package com.example.myapp.logging
-
-import ch.qos.logback.classic.spi.ILoggingEvent
-import com.fasterxml.jackson.core.JsonGenerator
-import net.logstash.logback.composite.AbstractFieldJsonProvider
-import net.logstash.logback.composite.JsonWritingUtils
-import reactor.core.publisher.Mono
-
-class ReactorContextJsonProvider : AbstractFieldJsonProvider<ILoggingEvent>() {
-
-    override fun writeTo(generator: JsonGenerator, event: ILoggingEvent) {
-        // Reactor ContextからtraceIdとuserIdを取得してJSONに追加
-        try {
-            Mono.deferContextual { contextView ->
-                // traceIdを取得
-                val traceId = contextView.getOrDefault<String>("traceId", "")
-                if (traceId.isNotEmpty()) {
-                    JsonWritingUtils.writeStringField(generator, "traceId", traceId)
-                }
-
-                // userIdを取得
-                val userId = contextView.getOrDefault<String>("userId", "")
-                if (userId.isNotEmpty()) {
-                    JsonWritingUtils.writeStringField(generator, "userId", userId)
-                }
-
-                Mono.empty<Void>()
-            }.block() // ログ出力時は同期的に取得
-        } catch (e: Exception) {
-            // Reactor Context外で実行された場合は何もしない
-        }
-    }
-}
-```
-
-#### 3. 使用例（アプリケーションコード）
-
-```kotlin
-import mu.KotlinLogging
-import org.springframework.stereotype.Service
-
-private val logger = KotlinLogging.logger {}
-
-@Service
-class OrderService(
-    private val orderRepository: OrderRepository,
-) {
-    suspend fun createOrder(request: CreateOrderRequest): Order {
-        // userIdは自動的にログに含まれる（Reactor Contextから取得される）
-        logger.info { "Creating order: amount=${request.amount}" }
-
-        val order = Order.create(request)
-        return orderRepository.save(order.toEntity()).toDomain()
-    }
-}
-```
-
-**ログ出力例:**
-
-```json
-{
-  "@timestamp": "2024-01-15T10:30:45.123+09:00",
-  "level": "INFO",
-  "logger": "com.example.myapp.application.OrderService",
-  "message": "Creating order: amount=5000",
-  "traceId": "abc123def456",
-  "userId": "user-12345",
-  "application": "my-app"
-}
-```
-
-## HTTPリクエスト/レスポンスのログ出力
+## HTTP リクエスト/レスポンスのログ出力
 
 ### デフォルトの動作
 
-Spring WebFluxでは**デフォルトではリクエスト/レスポンスの詳細ログは出力されません**。
+Spring WebFlux では**デフォルトではリクエスト/レスポンスの詳細ログは出力されません**。
+
+org.springframework.web.server.adapter.HttpWebHandlerAdapter のログレベルを DEBUG に設定すると、基本的なリクエスト情報が出力されます。
 
 ```yaml
 # Spring WebFluxのログレベルをDEBUGにした場合
@@ -718,7 +574,7 @@ logging:
     org.springframework.web.server.adapter.HttpWebHandlerAdapter: DEBUG
 ```
 
-**出力される内容（最小限・JSON形式）:**
+**出力される内容（最小限・JSON 形式）:**
 
 ```json
 {
@@ -729,22 +585,11 @@ logging:
 }
 ```
 
-- HTTPメソッド
-- パス
-- ステータスコード
+しかし、詳細なヘッダー情報やボディ、duration は出力されません。また、ログレベルによる柔軟な制御もできないため、カスタム実装による WebFilter でのカスタムログ出力を導入します。
 
-**出力されない内容:**
-- リクエストヘッダー（`Authorization`等）
-- リクエスト/レスポンスボディ
-- クエリパラメータの値
-- **実行時間**（duration）
-- **構造化されたフィールド**（method, uri, statusが別フィールドとして分離されていない）
+### 独自 WebFilter でのログ出力
 
-### 実装方法: 独自WebFilterでログ出力
-
-詳細なHTTPログをJSON形式で出力するには、カスタムWebFilterを実装します。
-
-#### HttpLoggingFilterの実装
+#### HttpLoggingFilter の実装
 
 ```kotlin
 package com.example.myapp.filter
@@ -783,40 +628,29 @@ class HttpLoggingFilter : WebFilter {
     private fun logRequest(exchange: ServerWebExchange) {
         val request = exchange.request
 
-        // Reactor ContextからtraceIdとuserIdを取得
-        Mono.deferContextual { ctx ->
-            val traceId = ctx.getOrDefault<String>("traceId", "")
-            val userId = ctx.getOrDefault<String>("userId", "")
+        // INFO: 基本情報のみ（構造化フィールドとして出力）
+        // traceIdとuserIdはMDCから自動的に取得される
+        if (logger.isInfoEnabled) {
+            logger.info(
+                "HTTP Request",
+                kv("type", "request"),
+                kv("method", request.method.name()),
+                kv("uri", request.uri.path)
+            )
+        }
 
-            // INFO: 基本情報のみ（構造化フィールドとして出力）
-            if (logger.isInfoEnabled) {
-                logger.info(
-                    "HTTP Request",
-                    kv("type", "request"),
-                    kv("method", request.method.name()),
-                    kv("uri", request.uri.path),
-                    *if (traceId.isNotEmpty()) arrayOf(kv("traceId", traceId)) else emptyArray(),
-                    *if (userId.isNotEmpty()) arrayOf(kv("userId", userId)) else emptyArray()
-                )
-            }
+        // DEBUG: ヘッダー含む
+        if (logger.isDebugEnabled) {
+            logger.debug(
+                "HTTP Request with Headers",
+                kv("type", "request"),
+                kv("method", request.method.name()),
+                kv("uri", request.uri.path),
+                kv("headers", maskSensitiveHeaders(request.headers.toSingleValueMap()))
+            )
+        }
 
-            // DEBUG: ヘッダー含む
-            if (logger.isDebugEnabled) {
-                logger.debug(
-                    "HTTP Request",
-                    kv("type", "request"),
-                    kv("method", request.method.name()),
-                    kv("uri", request.uri.path),
-                    kv("headers", maskSensitiveHeaders(request.headers.toSingleValueMap())),
-                    *if (traceId.isNotEmpty()) arrayOf(kv("traceId", traceId)) else emptyArray(),
-                    *if (userId.isNotEmpty()) arrayOf(kv("userId", userId)) else emptyArray()
-                )
-            }
-
-            // TRACE: ボディも含む（実装は省略、必要に応じて追加）
-
-            Mono.empty<Void>()
-        }.subscribe()
+        // TRACE: ボディも含む（実装は省略、必要に応じて追加）
     }
 
     private fun logResponse(exchange: ServerWebExchange, startTime: Long) {
@@ -824,42 +658,31 @@ class HttpLoggingFilter : WebFilter {
         val response = exchange.response
         val duration = System.currentTimeMillis() - startTime
 
-        // Reactor ContextからtraceIdとuserIdを取得
-        Mono.deferContextual { ctx ->
-            val traceId = ctx.getOrDefault<String>("traceId", "")
-            val userId = ctx.getOrDefault<String>("userId", "")
+        // INFO: 基本情報のみ（構造化フィールドとして出力）
+        // traceIdとuserIdはMDCから自動的に取得される
+        if (logger.isInfoEnabled) {
+            logger.info(
+                "HTTP Response",
+                kv("type", "response"),
+                kv("method", request.method.name()),
+                kv("uri", request.uri.path),
+                kv("status", response.statusCode?.value() ?: 0),
+                kv("duration", duration)
+            )
+        }
 
-            // INFO: 基本情報のみ（構造化フィールドとして出力）
-            if (logger.isInfoEnabled) {
-                logger.info(
-                    "HTTP Response",
-                    kv("type", "response"),
-                    kv("method", request.method.name()),
-                    kv("uri", request.uri.path),
-                    kv("status", response.statusCode?.value() ?: 0),
-                    kv("duration", duration),
-                    *if (traceId.isNotEmpty()) arrayOf(kv("traceId", traceId)) else emptyArray(),
-                    *if (userId.isNotEmpty()) arrayOf(kv("userId", userId)) else emptyArray()
-                )
-            }
-
-            // DEBUG: ヘッダー含む
-            if (logger.isDebugEnabled) {
-                logger.debug(
-                    "HTTP Response",
-                    kv("type", "response"),
-                    kv("method", request.method.name()),
-                    kv("uri", request.uri.path),
-                    kv("status", response.statusCode?.value() ?: 0),
-                    kv("duration", duration),
-                    kv("headers", response.headers.toSingleValueMap()),
-                    *if (traceId.isNotEmpty()) arrayOf(kv("traceId", traceId)) else emptyArray(),
-                    *if (userId.isNotEmpty()) arrayOf(kv("userId", userId)) else emptyArray()
-                )
-            }
-
-            Mono.empty<Void>()
-        }.subscribe()
+        // DEBUG: ヘッダー含む
+        if (logger.isDebugEnabled) {
+            logger.debug(
+                "HTTP Response with Headers",
+                kv("type", "response"),
+                kv("method", request.method.name()),
+                kv("uri", request.uri.path),
+                kv("status", response.statusCode?.value() ?: 0),
+                kv("duration", duration),
+                kv("headers", response.headers.toSingleValueMap())
+            )
+        }
     }
 
     private fun maskSensitiveHeaders(headers: Map<String, String>): Map<String, String> {
@@ -871,12 +694,13 @@ class HttpLoggingFilter : WebFilter {
 ```
 
 **特徴:**
+
 - **ログレベルで出力内容を制御**:
   - `INFO`: method, uri, status, duration, traceId, userId
   - `DEBUG`: + headers（機密情報マスク済み）
   - `TRACE`: + body（実装例は省略、必要に応じて追加可能）
-- Reactor Contextから`traceId`と`userId`を自動取得
-- JSON形式で構造化ログ出力
+- Reactor Context から`traceId`と`userId`を自動取得
+- JSON 形式で構造化ログ出力
 - 機密ヘッダー（Authorization, Cookie, X-API-Key）の自動マスク
 
 #### 環境別の設定
@@ -887,7 +711,7 @@ class HttpLoggingFilter : WebFilter {
 # application.yml
 logging:
   level:
-    com.example.myapp.filter.HttpLoggingFilter: INFO  # method, uri, status, duration, traceId, userId
+    com.example.myapp.filter.HttpLoggingFilter: INFO # method, uri, status, duration, traceId, userId
 ```
 
 **開発環境（ヘッダー含む）:**
@@ -896,7 +720,7 @@ logging:
 # application-local.yml
 logging:
   level:
-    com.example.myapp.filter.HttpLoggingFilter: DEBUG  # + headers（マスク済み）
+    com.example.myapp.filter.HttpLoggingFilter: DEBUG # + headers（マスク済み）
 ```
 
 **詳細デバッグ（ボディも含む）:**
@@ -905,7 +729,7 @@ logging:
 # 必要に応じて
 logging:
   level:
-    com.example.myapp.filter.HttpLoggingFilter: TRACE  # + body（実装必要）
+    com.example.myapp.filter.HttpLoggingFilter: TRACE # + body（実装必要）
 ```
 
 **環境変数での制御:**
@@ -916,86 +740,19 @@ export LOGGING_LEVEL_COM_EXAMPLE_MYAPP_FILTER_HTTPLOGGINGFILTER=DEBUG
 java -jar myapp.jar
 ```
 
-#### 出力例
-
-**INFO レベル（本番環境）:**
-
-```json
-// リクエスト
-{
-  "type": "request",
-  "method": "GET",
-  "uri": "/api/users/123",
-  "traceId": "new-relic-trace-123",
-  "userId": "user-456"
-}
-
-// レスポンス
-{
-  "type": "response",
-  "method": "GET",
-  "uri": "/api/users/123",
-  "status": 200,
-  "duration": 45,
-  "traceId": "new-relic-trace-123",
-  "userId": "user-456"
-}
-```
-
-**DEBUG レベル（開発環境）:**
-
-```json
-// リクエスト
-{
-  "type": "request",
-  "method": "POST",
-  "uri": "/api/users",
-  "headers": {
-    "content-type": "application/json",
-    "authorization": "[MASKED]",
-    "user-agent": "Mozilla/5.0..."
-  },
-  "traceId": "new-relic-trace-123",
-  "userId": "user-456"
-}
-
-// レスポンス
-{
-  "type": "response",
-  "method": "POST",
-  "uri": "/api/users",
-  "status": 201,
-  "duration": 123,
-  "headers": {
-    "content-type": "application/json",
-    "location": "/api/users/123"
-  },
-  "traceId": "new-relic-trace-123",
-  "userId": "user-456"
-}
-```
-
 #### 推奨設定パターン
 
-| 環境 | ログレベル | 出力内容 | 用途 |
-|------|-----------|---------|------|
-| **本番** | `INFO` | method, uri, status, duration, traceId, userId | パフォーマンス監視、基本的なトレース |
-| **E2E** | `DEBUG` | + headers（マスク済み） | ヘッダーの検証、API統合テスト |
-| **ローカル** | `DEBUG` or `TRACE` | + headers, body | フルデバッグ、開発時の確認 |
+| 環境         | ログレベル         | 出力内容                                       | 用途                                 |
+| ------------ | ------------------ | ---------------------------------------------- | ------------------------------------ |
+| **本番**     | `INFO`             | method, uri, status, duration, traceId, userId | パフォーマンス監視、基本的なトレース |
+| **E2E**      | `DEBUG`            | + headers（マスク済み）                        | ヘッダーの検証、API 統合テスト       |
+| **ローカル** | `DEBUG` or `TRACE` | + headers, body                                | フルデバッグ、開発時の確認           |
 
-**メリット:**
-- 依存関係不要（標準的なWebFilter）
-- traceId/userIdがReactor Contextから確実に取得される
-- ログレベルで簡単に出力内容を制御
-- 環境変数で動的に切り替え可能
-- 実装がシンプルで理解しやすい
-- JSON形式で構造化されたログ出力
-
-## 外部APIログ（WebClient）
+## 外部 API ログ（WebClient）
 
 ### デフォルトの動作
 
-WebClientは**デフォルトではリクエスト/レスポンスの詳細ログを出力しません**。
+WebClient は**デフォルトではリクエスト/レスポンスの詳細ログを出力しません**。
 
 ```yaml
 # これだけでは何も出ない
@@ -1004,11 +761,11 @@ logging:
     org.springframework.web.reactive.function.client: DEBUG
 ```
 
-### 実装方法: ExchangeFilterFunctionでログ出力
+### 実装方法: ExchangeFilterFunction でログ出力
 
-WebClientに`ExchangeFilterFunction`を追加して、ログを出力します。
+WebClient に`ExchangeFilterFunction`を追加して、ログを出力します。
 
-#### WebClientLoggingFilterの実装
+#### WebClientLoggingFilter の実装
 
 ```kotlin
 package com.example.myapp.config
@@ -1105,7 +862,7 @@ class WebClientLoggingFilter {
 }
 ```
 
-#### WebClientConfigに追加
+#### WebClientConfig に追加
 
 ```kotlin
 import org.springframework.context.annotation.Bean
@@ -1136,7 +893,7 @@ class WebClientConfig(
 # application.yml
 logging:
   level:
-    com.example.myapp.config.WebClientLoggingFilter: INFO  # method, url, status, duration
+    com.example.myapp.config.WebClientLoggingFilter: INFO # method, url, status, duration
 ```
 
 **開発環境（ヘッダー含む）:**
@@ -1145,12 +902,12 @@ logging:
 # application-local.yml
 logging:
   level:
-    com.example.myapp.config.WebClientLoggingFilter: DEBUG  # + headers（マスク済み）
+    com.example.myapp.config.WebClientLoggingFilter: DEBUG # + headers（マスク済み）
 ```
 
-**デバッグ用（完全なHTTPトラフィック）:**
+**デバッグ用（完全な HTTP トラフィック）:**
 
-開発環境でのみ、Reactor Nettyの`wiretap()`を使用して完全なログを出力:
+開発環境でのみ、Reactor Netty の`wiretap()`を使用して完全なログを出力:
 
 ```kotlin
 import io.netty.handler.logging.LogLevel
@@ -1244,18 +1001,19 @@ logging:
 
 ### 推奨設定パターン
 
-| 環境 | ログレベル | 出力内容 | 用途 |
-|------|-----------|---------|------|
-| **本番** | `INFO` | method, url, status, duration | 外部API呼び出しの監視、パフォーマンス測定 |
-| **E2E** | `DEBUG` | + headers（マスク済み） | API統合テストの検証 |
-| **ローカル** | `DEBUG` or wiretap | + headers, body | フルデバッグ、外部API開発時の確認 |
+| 環境         | ログレベル         | 出力内容                      | 用途                                        |
+| ------------ | ------------------ | ----------------------------- | ------------------------------------------- |
+| **本番**     | `INFO`             | method, url, status, duration | 外部 API 呼び出しの監視、パフォーマンス測定 |
+| **E2E**      | `DEBUG`            | + headers（マスク済み）       | API 統合テストの検証                        |
+| **ローカル** | `DEBUG` or wiretap | + headers, body               | フルデバッグ、外部 API 開発時の確認         |
 
 **メリット:**
-- 外部APIへのリクエスト/レスポンスを記録
+
+- 外部 API へのリクエスト/レスポンスを記録
 - 実行時間を測定してパフォーマンス監視
 - ログレベルで簡単に制御
-- 機密ヘッダー（Authorization, API Key等）の自動マスク
-- JSON形式で構造化されたログ出力
+- 機密ヘッダー（Authorization, API Key 等）の自動マスク
+- JSON 形式で構造化されたログ出力
 
 ## ログ収集とモニタリング
 
@@ -1263,7 +1021,7 @@ logging:
 
 ```yaml
 # docker-compose.yml（ローカル開発用）
-version: '3.8'
+version: "3.8"
 services:
   app:
     image: myapp:latest
@@ -1288,14 +1046,14 @@ management:
 
 ### Elasticsearch + Kibana
 
-JSON形式のログをFluentd/Filebeat経由でElasticsearchに送信し、Kibanaで可視化します。
+JSON 形式のログを Fluentd/Filebeat 経由で Elasticsearch に送信し、Kibana で可視化します。
 
 ```yaml
 # filebeat.yml
 filebeat.inputs:
   - type: container
     paths:
-      - '/var/lib/docker/containers/*/*.log'
+      - "/var/lib/docker/containers/*/*.log"
 
 processors:
   - decode_json_fields:
@@ -1392,8 +1150,8 @@ logger.debug { "Result: ${expensiveOperation()}" }
 
 ## まとめ
 
-- **JSON形式で統一** - すべての環境で構造化ログ
-- **TraceIdで追跡** - New Relicとログを紐付ける
+- **JSON 形式で統一** - すべての環境で構造化ログ
+- **TraceId で追跡** - New Relic とログを紐付ける
 - **適切なログレベル** - 環境ごとに最適化
-- **MDCでコンテキスト情報** - traceId、userIdを自動付与
+- **MDC でコンテキスト情報** - traceId、userId を自動付与
 - **補完関係** - New Relic（処理フロー）とログ（ビジネス詳細）を組み合わせる
